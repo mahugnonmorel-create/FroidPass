@@ -70,3 +70,4 @@ main{padding:24px 0 80px}
   .cert{border:0;padding:0;max-width:none}
 }
 [hidden]{display:none!important}
+.tbl{width:100%;border-collapse:collapse;font-size:14px}.tbl th,.tbl td{border-bottom:1px solid var(--line);padding:8px;text-align:left;white-space:nowrap}.tbl th{background:var(--ice);font-weight:600}

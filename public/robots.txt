@@ -1,5 +1,8 @@
 User-agent: *
 Allow: /
 Disallow: /app
-Disallow: /e
+Disallow: /e.html
+Disallow: /e?
+Disallow: /s.html
+Disallow: /s?
 Sitemap: https://froidpasss.mahugnonmorel.workers.dev/sitemap.xml

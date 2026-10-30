@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#0b2230">
+<title>État de maintenance du site — FroidPass</title>
+<link rel="icon" href="icon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,800&family=IBM+Plex+Mono:wght@400;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css?v=3">
+<script src="config.js?v=3"></script>
+<style>
+.box{max-width:720px;margin:16px auto;background:#fff;border-radius:22px;border:1px solid var(--line);overflow:hidden;box-shadow:0 18px 44px rgba(11,34,48,.1)}
+.hd{background:var(--ink);color:#fff;padding:22px}.bd{padding:18px 20px}
+.k{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:14px 0}
+@media(max-width:560px){.k{grid-template-columns:1fr 1fr}}
+.k div{border:1px solid var(--line);border-radius:12px;padding:10px;text-align:center}
+.k b{display:block;font-family:"Bricolage Grotesque";font-size:24px}
+.z{font-weight:700;margin:16px 0 4px;color:var(--ink2)}
+</style>
+</head>
+<body>
+<div class="wrap"><div class="box" id="c"><div class="bd"><p class="empty">Chargement…</p></div></div></div>
+<script type="module">
+import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+const CFG = window.FROIDPASS_CONFIG;
+const TYPES = { split:["Split mural / console","❄️",60,90], cassette:["Cassette / gainable","🌀",60,90], groupe:["Groupe extérieur","🔆",60,90], chambre:["Chambre froide","🧊",30,30], vitrine:["Armoire / vitrine réfrigérée","🥶",60,90] };
+const esc = s => String(s ?? "").replace(/[&<>"']/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));
+const fr = s => s ? String(s).slice(0,10).split("-").reverse().join("/") : "—";
+const _n = new Date(), TODAY = Date.UTC(_n.getFullYear(), _n.getMonth(), _n.getDate());
+const el = document.getElementById("c");
+try {
+  const code = new URLSearchParams(location.search).get("c");
+  if (!code) throw new Error("QR invalide");
+  const sb = createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY);
+  const { data, error } = await sb.rpc("get_site", { p_code: code });
+  if (error) throw error;
+  if (!data) throw new Error("Site introuvable");
+  const tech = data.technicien, wa = String(tech.whatsapp || "").replace(/\D/g, "");
+  const eqs = data.equipements.map(e => {
+    const t = TYPES[e.type] || ["Équipement","❄️",90,90], f = e.environnement === "cotier" ? t[2] : t[3];
+    const next = Date.parse(e.dernier_preventif || e.date_pose) + f * 864e5, d = Math.round((next - TODAY) / 864e5);
+    return { ...e, t, next: new Date(next).toISOString().slice(0,10), d };
+  });
+  const ok = eqs.filter(e => e.d > 14).length, soon = eqs.filter(e => e.d >= 0 && e.d <= 14).length, late = eqs.filter(e => e.d < 0).length;
+  const pct = eqs.length ? Math.round(100 * (ok + soon) / eqs.length) : 0;
+  const zones = [...new Set(eqs.map(e => e.zone || ""))];
+  document.title = `${data.client} — État de maintenance`;
+  el.innerHTML = `<div class="hd"><div style="font-size:13px;opacity:.7">État de maintenance du site</div>
+      <div class="disp" style="font-size:26px;font-weight:800;margin-top:4px">${esc(data.client)}</div>
+      <div style="margin-top:8px;font-size:15px;color:#a9c9d0"><b style="color:#fff;font-size:20px">${pct} %</b> du parc à jour</div></div>
+    <div class="bd">
+      <div class="k"><div><b>${eqs.length}</b><span class="m">équipements</span></div><div><b style="color:var(--ok)">${ok}</b><span class="m">à jour</span></div><div><b style="color:#a77400">${soon}</b><span class="m">bientôt</span></div><div><b style="color:var(--bad)">${late}</b><span class="m">en retard</span></div></div>
+      ${zones.map(z => `${zones.length > 1 || z ? `<div class="z">${esc(z || "Autres")}</div>` : ""}
+        ${eqs.filter(e => (e.zone || "") === z).sort((a,b) => a.d - b.d).map(e => `<a class="row" href="/e.html?c=${e.code_public}"><div class="ic">${e.t[1]}</div>
+          <div><div class="t">${esc(e.emplacement)}</div><div class="m">${e.t[0]} · dernier : ${fr(e.dernier_preventif)} · prochain : ${fr(e.next)}</div></div>
+          <span class="pill ${e.d < 0 ? "p-bad" : e.d <= 14 ? "p-warn" : "p-ok"}">${e.d < 0 ? "En retard" : e.d <= 14 ? "Dans " + e.d + " j" : "À jour"}</span></a>`).join("")}`).join("") || '<p class="empty">Aucun équipement enregistré.</p>'}
+      <div style="border-top:1px solid var(--line);padding-top:14px;margin-top:12px">
+        <div class="m">Maintenance assurée par</div><b>${esc(tech.entreprise || tech.nom)}</b>${tech.entreprise ? `<div class="m">${esc(tech.nom)}</div>` : ""}
+        ${wa ? `<br><a class="btn btn-hot btn-sm" style="margin-top:10px" href="https://wa.me/${wa}?text=${encodeURIComponent("Bonjour, je vous contacte au sujet de la maintenance de " + data.client + ".")}">Contacter sur WhatsApp</a>` : ""}
+      </div>
+      <p class="m" style="text-align:center;margin-top:18px">Propulsé par <a href="/">FroidPass</a></p>
+    </div>`;
+} catch (err) {
+  el.innerHTML = `<div class="bd"><h3>Page indisponible</h3><p class="m">${esc(err.message)}</p></div>`;
+}
+</script>
+</body>
+</html>
