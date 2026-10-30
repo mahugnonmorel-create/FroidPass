@@ -2,6 +2,7 @@
 // FroidPass — application technicien
 // =====================================================================
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+import { periode, dernieresPeriodes, TYPES_PERIODE } from "./periodes.js?v=1";
 
 const CFG = window.FROIDPASS_CONFIG || {};
 const $view = document.getElementById("view");
@@ -646,32 +647,33 @@ function renderRapport(clientId) {
 }
 
 // ---------- Envoi du rapport mensuel au client (responsable / directeur uniquement) ----------
-let moisEnvoi = null;
-const MOIS_FR = ["janvier","février","mars","avril","mai","juin","juillet","août","septembre","octobre","novembre","décembre"];
-const listeMois = () => { const d = new Date(TODAY); return [0, 1, 2, 3, 4, 5].map(k => { const x = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - k, 1)); return { v: x.toISOString().slice(0, 7), l: `${MOIS_FR[x.getUTCMonth()]} ${x.getUTCFullYear()}` }; }); };
-const libMois = v => { const [y, m] = v.split("-").map(Number); return `${MOIS_FR[m - 1]} ${y}`; };
+let moisEnvoi = null, typeEnvoi = "mensuel";
+const libMois = v => { const P = periode(v); return P ? P.lib : v; };
+const typeDe = v => { const P = periode(v); return P ? TYPES_PERIODE[P.type] : ""; };
 const rapportUrl = (c, mois) => location.origin + "/r?c=" + (c.code_rapport || "") + "&m=" + mois;
 function resumeMois(c, mois) {
-  const [y, m] = mois.split("-").map(Number), d = Date.UTC(y, m - 1, 1), f = Date.UTC(y, m, 1);
+  const P = periode(mois), d = P.debut, f = P.fin;
   const ids = S.eqs.filter(e => e.client_id === c.id).map(e => e.id);
   const ints = S.ints.filter(i => ids.includes(i.equipement_id) && Date.parse(i.date) >= d && Date.parse(i.date) < f);
   return { nbEq: ids.length, nbInt: ints.length, nbPrev: ints.filter(i => i.type === "preventif").length };
 }
 function panneauEnvoi(c) {
-  if (!moisEnvoi) moisEnvoi = listeMois()[0].v;
+  const liste = dernieresPeriodes(typeEnvoi);
+  if (!liste.some(x => x.code === moisEnvoi)) moisEnvoi = liste[0].code;
   if (!c.code_rapport) return `<div class="panel noprint"><h3>Envoyer le rapport mensuel au client</h3><p class="m">Mise à jour de la base requise : exécutez <b>supabase/mise-a-jour-rapports.sql</b> dans Supabase pour activer l'envoi.</p></div>`;
   const hist = (S.rapports || []).filter(r => r.client_id === c.id);
-  return `<div class="panel noprint" id="envoi"><h3>Envoyer le rapport mensuel au client</h3>
-    <p class="m" style="margin-bottom:10px">Le client reçoit un lien vers son rapport du mois (sans compte), qu'il peut consulter, imprimer ou enregistrer en PDF.</p>
+  return `<div class="panel noprint" id="envoi"><h3>Envoyer un rapport au client</h3>
+    <p class="m" style="margin-bottom:10px">Rapport mensuel, trimestriel, semestriel ou annuel. Le client reçoit un lien (sans compte) qu'il peut consulter, imprimer ou enregistrer en PDF.</p>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <select class="field" id="moisEnv" style="width:auto;padding:7px 10px">${listeMois().map(o => `<option value="${o.v}" ${o.v === moisEnvoi ? "selected" : ""}>${o.l}</option>`).join("")}</select>
+      <select class="field" id="typeEnv" style="width:auto;padding:7px 10px">${Object.entries(TYPES_PERIODE).map(([k, l]) => `<option value="${k}" ${k === typeEnvoi ? "selected" : ""}>${l}</option>`).join("")}</select>
+      <select class="field" id="moisEnv" style="width:auto;padding:7px 10px">${liste.map(o => `<option value="${o.code}" ${o.code === moisEnvoi ? "selected" : ""}>${o.lib}</option>`).join("")}</select>
       <button class="btn btn-hot btn-sm" id="envMail">✉️ Envoyer par e-mail${c.email ? "" : " (ajouter l'e-mail)"}</button>
       <button class="btn btn-teal btn-sm" id="envWa">💬 Envoyer par WhatsApp${c.whatsapp ? "" : " (ajouter le numéro)"}</button>
       <button class="btn btn-ghost btn-sm" id="envCp">Copier le lien</button>
       <a class="btn btn-ghost btn-sm" id="envVoir" target="_blank" rel="noopener" href="${rapportUrl(c, moisEnvoi)}">Aperçu client</a>
     </div>
     <p class="m" style="margin-top:8px">Destinataires : ${c.email ? "✉️ " + esc(c.email) : "e-mail non renseigné"} · ${c.whatsapp ? "💬 " + esc(c.whatsapp) : "WhatsApp non renseigné"} · <a href="javascript:void 0" id="envEdit">modifier</a></p>
-    <div style="margin-top:12px"><b style="font-size:14px">Historique des envois</b>${hist.length ? `<table class="tbl" style="margin-top:6px"><tr><th>Date</th><th>Mois</th><th>Canal</th><th>Destinataire</th><th>Envoyé par</th></tr>${hist.slice(0, 12).map(r => `<tr><td class="mono">${fr(r.created_at)}</td><td>${libMois(r.mois)}</td><td>${r.canal === "email" ? "✉️ E-mail" : "💬 WhatsApp"}</td><td>${esc(r.destinataire)}</td><td>${esc(r.envoye_par_nom)}</td></tr>`).join("")}</table>` : `<p class="m">Aucun rapport envoyé à ce ${W().client} pour l'instant.</p>`}</div></div>`;
+    <div style="margin-top:12px"><b style="font-size:14px">Historique des envois</b>${hist.length ? `<table class="tbl" style="margin-top:6px"><tr><th>Date</th><th>Rapport</th><th>Période</th><th>Canal</th><th>Destinataire</th><th>Envoyé par</th></tr>${hist.slice(0, 12).map(r => `<tr><td class="mono">${fr(r.created_at)}</td><td>${typeDe(r.mois)}</td><td>${libMois(r.mois)}</td><td>${r.canal === "email" ? "✉️ E-mail" : "💬 WhatsApp"}</td><td>${esc(r.destinataire)}</td><td>${esc(r.envoye_par_nom)}</td></tr>`).join("")}</table>` : `<p class="m">Aucun rapport envoyé à ce ${W().client} pour l'instant.</p>`}</div></div>`;
 }
 async function journaliserEnvoi(c, canal, destinataire) {
   const { error } = await sb.from("rapports_envoyes").insert({ client_id: c.id, mois: moisEnvoi, canal, destinataire, envoye_par: S.user.id, envoye_par_nom: (S.me || S.tech).nom || "" });
@@ -680,19 +682,20 @@ async function journaliserEnvoi(c, canal, destinataire) {
 function brancherEnvoi(c, clientId) {
   const $ = id => document.getElementById(id); if (!$("envoi")) return;
   const rerender = () => renderRapport(clientId);
+  $("typeEnv").onchange = ev => { typeEnvoi = ev.target.value; moisEnvoi = null; rerender(); };
   $("moisEnv").onchange = ev => { moisEnvoi = ev.target.value; $("envVoir").href = rapportUrl(c, moisEnvoi); };
   $("envEdit").onclick = () => openEditClient(c.id, rerender);
   $("envCp").onclick = async () => { try { await navigator.clipboard.writeText(rapportUrl(c, moisEnvoi)); toast("Lien du rapport copié"); } catch { toast(rapportUrl(c, moisEnvoi)); } };
   $("envWa").onclick = async () => {
     if (!c.whatsapp) return openEditClient(c.id, rerender);
     const r = resumeMois(c, moisEnvoi), qui = (S.me || S.tech).nom;
-    const txt = `Bonjour ${c.contact || ""},\n\nVoici le rapport de maintenance de ${libMois(moisEnvoi)} pour ${c.nom} : ${r.nbEq} équipement(s) suivis, ${r.nbInt} intervention(s) dont ${r.nbPrev} préventive(s).\n\nRapport complet (consultable et imprimable en PDF) :\n${rapportUrl(c, moisEnvoi)}\n\nCordialement,\n${qui}${S.tech.entreprise ? " — " + S.tech.entreprise : ""}`;
+    const txt = `Bonjour ${c.contact || ""},\n\nVoici le ${periode(moisEnvoi).titre.toLowerCase()} pour ${c.nom} (${libMois(moisEnvoi)}) : ${r.nbEq} équipement(s) suivis, ${r.nbInt} intervention(s) dont ${r.nbPrev} préventive(s).\n\nRapport complet (consultable et imprimable en PDF) :\n${rapportUrl(c, moisEnvoi)}\n\nCordialement,\n${qui}${S.tech.entreprise ? " — " + S.tech.entreprise : ""}`;
     window.open(`https://wa.me/${waNum(c.whatsapp)}?text=${encodeURIComponent(txt)}`, "_blank", "noopener");
     await journaliserEnvoi(c, "whatsapp", c.whatsapp); await loadAll(); rerender(); toast("WhatsApp ouvert · envoi enregistré dans l'historique");
   };
   $("envMail").onclick = () => {
     if (!c.email) return openEditClient(c.id, rerender);
-    confirmBox(`Envoyer le rapport de <b>${libMois(moisEnvoi)}</b> à <b>${esc(c.email)}</b> ?`, async () => {
+    confirmBox(`Envoyer le ${periode(moisEnvoi).titre.toLowerCase()} (<b>${libMois(moisEnvoi)}</b>) à <b>${esc(c.email)}</b> ?`, async () => {
       const btn = $("envMail"); if (btn) { btn.disabled = true; btn.textContent = "Envoi…"; }
       try {
         const { data: { session } } = await sb.auth.getSession();

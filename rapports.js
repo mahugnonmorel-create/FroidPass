@@ -1,7 +1,7 @@
 // FroidPass — envoi du rapport mensuel d'un site au client par e-mail (réservé au responsable / directeur)
 const json = (d, s = 200) => new Response(JSON.stringify(d), { status: s, headers: { "Content-Type": "application/json; charset=utf-8" } });
 const esc = s => String(s ?? "").replace(/[&<>"']/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
-const MOIS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"];
+import { periode } from "./public/periodes.js";
 
 // Appel PostgREST, soit avec le jeton de l'utilisateur (RLS appliquée), soit avec la clé service_role
 async function pg(env, path, { token, method = "GET", body } = {}) {
@@ -26,7 +26,8 @@ export async function envoyerRapport(request, env) {
 
   const b = await request.json().catch(() => ({}));
   const mois = String(b.mois || ""), clientId = String(b.client_id || "");
-  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(mois)) return json({ error: "Mois invalide" }, 400);
+  const P = periode(mois);
+  if (!P) return json({ error: "Période invalide" }, 400);
   if (!/^[0-9a-f-]{36}$/i.test(clientId)) return json({ error: "Client invalide" }, 400);
 
   // Droits : l'utilisateur doit être responsable/directeur de l'organisation qui possède ce client
@@ -40,7 +41,7 @@ export async function envoyerRapport(request, env) {
   const r = await pg(env, "rpc/get_rapport", { method: "POST", body: { p_code: c.code_rapport, p_mois: mois } });
   if (!r) return json({ error: "Rapport introuvable" }, 404);
   const me = (await pg(env, `techniciens?id=eq.${user.id}&select=nom`))[0];
-  const pr = r.prestataire || {}, [y, m] = mois.split("-").map(Number), libelle = `${MOIS[m - 1]} ${y}`;
+  const pr = r.prestataire || {}, libelle = P.lib;
   const ints = r.interventions || [], prev = ints.filter(i => i.type === "preventif").length;
   const lien = `${(env.SITE_URL || new URL(request.url).origin).replace(/\/$/, "")}/r?c=${c.code_rapport}&m=${mois}`;
   const expediteur = pr.entreprise || pr.nom || "Votre service maintenance";
@@ -51,10 +52,10 @@ export async function envoyerRapport(request, env) {
     body: JSON.stringify({
       sender: { name: expediteur.slice(0, 70), email: env.EMAIL_EXPEDITEUR }, to: [{ email: dest, name: c.contact || c.nom }],
       ...(user.email ? { replyTo: { email: user.email, name: me?.nom || expediteur } } : {}),
-      subject: `Rapport de maintenance ${libelle} — ${c.nom}`,
+      subject: `${P.titre} — ${libelle} — ${c.nom}`,
       htmlContent: `<div style="font-family:Arial,sans-serif;max-width:600px;color:#0b2230">
-        <h2 style="margin-bottom:4px">Rapport de maintenance — ${esc(libelle)}</h2><p style="margin-top:0;color:#5b6b75">${esc(c.nom)}</p>
-        <p>Bonjour ${esc(c.contact || "")},</p><p>Veuillez trouver ci-dessous la synthèse de la maintenance de vos équipements pour le mois de ${esc(libelle)}.</p>
+        <h2 style="margin-bottom:4px">${esc(P.titre)} — ${esc(libelle)}</h2><p style="margin-top:0;color:#5b6b75">${esc(c.nom)}</p>
+        <p>Bonjour ${esc(c.contact || "")},</p><p>Veuillez trouver ci-dessous la synthèse de la maintenance de vos équipements pour la période : ${esc(libelle)}.</p>
         <table style="width:100%;border-collapse:separate;border-spacing:6px"><tr>${kpi((r.equipements || []).length, "équipements suivis")}${kpi(ints.length, "interventions")}${kpi(prev, "préventives")}${kpi(r.signalements, "pannes signalées")}</tr></table>
         <p style="text-align:center;margin:22px 0"><a href="${lien}" style="background:#ff6a3d;color:#fff;padding:12px 22px;border-radius:999px;text-decoration:none;font-weight:bold">Consulter le rapport complet</a></p>
         <p style="font-size:13px;color:#5b6b75">Le rapport détaillé (interventions, mesures, état du parc, prochains entretiens) peut être imprimé ou enregistré en PDF depuis ce lien.</p>

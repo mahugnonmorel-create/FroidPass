@@ -1,5 +1,6 @@
 -- =====================================================================
--- FroidPass — Envoi du rapport mensuel au client (e-mail / WhatsApp)
+-- FroidPass — Envoi des rapports au client (e-mail / WhatsApp)
+-- Périodes : mensuel 'AAAA-MM', trimestriel 'AAAA-T1..T4', semestriel 'AAAA-S1/S2', annuel 'AAAA'
 -- =====================================================================
 
 -- E-mail du client et code secret du rapport (différent du QR affiché sur le site)
@@ -29,18 +30,29 @@ drop policy if exists re_insert on public.rapports_envoyes;
 create policy re_insert on public.rapports_envoyes for insert with check (technicien_id = public.mon_org() and public.est_admin()
   and exists (select 1 from public.clients c where c.id = client_id and c.technicien_id = public.mon_org()));
 grant select, insert on public.rapports_envoyes to authenticated;
+-- Accepte aussi les périodes trimestrielles, semestrielles et annuelles
+alter table public.rapports_envoyes drop constraint if exists rapports_envoyes_mois_check;
+alter table public.rapports_envoyes add constraint rapports_envoyes_mois_check check (mois ~ '^\d{4}(-(0[1-9]|1[0-2]|T[1-4]|S[12]))?$');
 
--- Rapport public d'un mois (lecture seule, accessible avec le code secret du client)
+-- Rapport public d'une période (lecture seule, accessible avec le code secret du client)
+-- p_mois : 'AAAA-MM' (mois), 'AAAA-Tn' (trimestre), 'AAAA-Sn' (semestre) ou 'AAAA' (année)
 create or replace function public.get_rapport(p_code text, p_mois text)
 returns json language plpgsql stable security definer set search_path = public as $$
 declare c public.clients; d date; f date;
 begin
-  if p_mois !~ '^\d{4}-\d{2}$' then return null; end if;
+  if p_mois ~ '^\d{4}-(0[1-9]|1[0-2])$' then
+    d := to_date(p_mois || '-01', 'YYYY-MM-DD'); f := (d + interval '1 month')::date;
+  elsif p_mois ~ '^\d{4}-T[1-4]$' then
+    d := make_date(left(p_mois, 4)::int, (right(p_mois, 1)::int - 1) * 3 + 1, 1); f := (d + interval '3 months')::date;
+  elsif p_mois ~ '^\d{4}-S[12]$' then
+    d := make_date(left(p_mois, 4)::int, (right(p_mois, 1)::int - 1) * 6 + 1, 1); f := (d + interval '6 months')::date;
+  elsif p_mois ~ '^\d{4}$' then
+    d := make_date(p_mois::int, 1, 1); f := (d + interval '1 year')::date;
+  else return null; end if;
   select * into c from public.clients where code_rapport = p_code;
   if c.id is null then return null; end if;
-  d := to_date(p_mois || '-01', 'YYYY-MM-DD'); f := (d + interval '1 month')::date;
   return json_build_object(
-    'mois', p_mois,
+    'mois', p_mois, 'debut', d, 'fin', (f - 1),
     'client', json_build_object('nom', c.nom, 'contact', c.contact),
     'prestataire', (select json_build_object('nom', t.nom, 'entreprise', t.entreprise, 'whatsapp', t.whatsapp, 'profil', t.profil) from public.techniciens t where t.id = c.technicien_id),
     'equipements', coalesce((select json_agg(json_build_object(

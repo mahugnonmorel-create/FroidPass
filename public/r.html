@@ -18,36 +18,41 @@
 </div>
 <script type="module">
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+import { periode } from "./periodes.js?v=1";
 const CFG = window.FROIDPASS_CONFIG;
 const TYPES = { split:["Split mural / console",60,90], cassette:["Cassette / gainable",60,90], groupe:["Groupe extérieur",60,90], chambre:["Chambre froide",30,30], vitrine:["Armoire / vitrine réfrigérée",60,90], vrv:["VRV / DRV",60,90], cta:["Centrale de traitement d'air",30,30], eau_glacee:["Groupe d'eau glacée",30,30], clim_precision:["Climatisation de précision",30,30], frigo_medical:["Réfrigérateur médical / labo",30,30], chambre_mortuaire:["Chambre mortuaire",30,30], ventilation:["Ventilation / extraction",90,90] };
-const MOIS = ["janvier","février","mars","avril","mai","juin","juillet","août","septembre","octobre","novembre","décembre"];
 const esc = s => String(s ?? "").replace(/[&<>"']/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));
 const fr = s => s ? String(s).slice(0,10).split("-").reverse().join("/") : "—";
 const el = document.getElementById("c");
 try {
   const q = new URLSearchParams(location.search), code = q.get("c"), mois = q.get("m");
-  if (!code || !/^\d{4}-\d{2}$/.test(mois || "")) throw new Error("Lien de rapport invalide");
+  const P = periode(mois || "");
+  if (!code || !P) throw new Error("Lien de rapport invalide");
   const sb = createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY);
   const { data, error } = await sb.rpc("get_rapport", { p_code: code, p_mois: mois });
   if (error) throw error; if (!data) throw new Error("Rapport introuvable");
-  const [y, m] = mois.split("-").map(Number), finMois = Date.UTC(y, m, 0), _n = new Date(), today = Date.UTC(_n.getFullYear(), _n.getMonth(), _n.getDate());
-  const ref = Math.min(finMois, today), libelle = `${MOIS[m - 1]} ${y}`;
+  const finMois = P.fin - 864e5, _n = new Date(), today = Date.UTC(_n.getFullYear(), _n.getMonth(), _n.getDate());
+  const ref = Math.min(finMois, today), libelle = P.lib;
   const eqs = data.equipements.map(e => { const t = TYPES[e.type] || ["Équipement",90,90], f = e.frequence_jours || (e.environnement === "cotier" ? t[1] : t[2]); const next = Date.parse(e.dernier_preventif || e.date_pose) + f * 864e5; return { ...e, label: t[0], next, d: Math.round((next - ref) / 864e5) }; });
   const late = eqs.filter(e => e.d < 0).length, pct = eqs.length ? Math.round(100 * (eqs.length - late) / eqs.length) : 0;
   const ints = data.interventions, prev = ints.filter(i => i.type === "preventif").length;
   const pr = data.prestataire || {}, zones = [...new Set(eqs.map(e => e.zone || ""))];
-  document.title = `Rapport ${libelle} — ${data.client.nom}`;
-  el.innerHTML = `<div class="ch"><div><div class="disp" style="font-size:26px;font-weight:800">Rapport de maintenance</div>
-      <div style="font-size:18px;font-weight:600;margin-top:4px">${esc(data.client.nom)}</div><div class="m">Mois de ${libelle}</div></div>
+  document.title = `${P.titre} — ${libelle} — ${data.client.nom}`;
+  const ligneMois = P.nbMois > 1 ? `<h3 style="font-size:17px;margin-top:20px">Évolution sur la période</h3>
+    <table><tr><th>Mois</th><th>Préventives</th><th>Curatives</th><th>Total</th></tr>${P.mois.map(x => { const l = ints.filter(i => String(i.date).slice(0, 7) === x.code), pv = l.filter(i => i.type === "preventif").length; return `<tr><td>${x.lib}</td><td>${pv}</td><td>${l.length - pv}</td><td><b>${l.length}</b></td></tr>`; }).join("")}
+    <tr><td><b>Total</b></td><td><b>${prev}</b></td><td><b>${ints.length - prev}</b></td><td><b>${ints.length}</b></td></tr></table>` : "";
+  el.innerHTML = `<div class="ch"><div><div class="disp" style="font-size:26px;font-weight:800">${P.titre}</div>
+      <div style="font-size:18px;font-weight:600;margin-top:4px">${esc(data.client.nom)}</div><div class="m">Période : ${libelle}${P.nbMois > 1 ? ` (du ${fr(new Date(P.debut).toISOString())} au ${fr(new Date(finMois).toISOString())})` : ""}</div></div>
       <div style="text-align:right;font-size:14px"><b>${esc(pr.entreprise || pr.nom)}</b><br>${esc(pr.nom)}<br><span class="mono">${esc(pr.whatsapp)}</span></div></div>
-    <h3 style="font-size:17px">1. Synthèse du mois</h3>
+    <h3 style="font-size:17px">1. Synthèse ${P.nbMois > 1 ? "de la période" : "du mois"}</h3>
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:10px 0">
       ${[[eqs.length,"équipements suivis"],[pct + " %","du parc à jour"],[ints.length,"interventions"],[data.signalements,"pannes signalées"]].map(([v,l]) => `<div style="border:1px solid var(--line);border-radius:10px;padding:10px;text-align:center"><div class="disp" style="font-size:24px;font-weight:800">${v}</div><div class="m" style="font-size:12.5px">${l}</div></div>`).join("")}
     </div>
-    <p style="font-size:14px">${prev} entretien(s) préventif(s) et ${ints.length - prev} intervention(s) curative(s) réalisés en ${libelle}.${late ? ` <b style="color:var(--bad)">${late} équipement(s) à rattraper.</b>` : " Aucun équipement en retard."}</p>
+    <p style="font-size:14px">${prev} entretien(s) préventif(s) et ${ints.length - prev} intervention(s) curative(s) réalisés sur la période (${libelle}).${late ? ` <b style="color:var(--bad)">${late} équipement(s) à rattraper.</b>` : " Aucun équipement en retard."}</p>
+    ${ligneMois}
     <h3 style="font-size:17px;margin-top:20px">2. Interventions réalisées</h3>
     <table><tr><th>Date</th><th>Équipement</th><th>Type</th><th>Mesures</th><th>Observations</th></tr>
-    ${ints.map(i => `<tr><td class="mono">${fr(i.date)}</td><td>${esc(i.equipement)}</td><td>${i.type === "preventif" ? "Préventif" : "Curatif"}</td><td class="mono" style="font-size:12px">${[i.hp != null && "HP " + i.hp, i.bp != null && "BP " + i.bp, i.intensite != null && "I " + i.intensite + " A", i.t_soufflage != null && "Ts " + i.t_soufflage + " °C", i.t_reprise != null && "Tr " + i.t_reprise + " °C"].filter(Boolean).join(" · ") || "—"}</td><td>${esc(i.observations)}</td></tr>`).join("") || `<tr><td colspan="5">Aucune intervention ce mois-ci</td></tr>`}</table>
+    ${ints.map(i => `<tr><td class="mono">${fr(i.date)}</td><td>${esc(i.equipement)}</td><td>${i.type === "preventif" ? "Préventif" : "Curatif"}</td><td class="mono" style="font-size:12px">${[i.hp != null && "HP " + i.hp, i.bp != null && "BP " + i.bp, i.intensite != null && "I " + i.intensite + " A", i.t_soufflage != null && "Ts " + i.t_soufflage + " °C", i.t_reprise != null && "Tr " + i.t_reprise + " °C"].filter(Boolean).join(" · ") || "—"}</td><td>${esc(i.observations)}</td></tr>`).join("") || `<tr><td colspan="5">Aucune intervention sur la période</td></tr>`}</table>
     <h3 style="font-size:17px;margin-top:20px">3. État du parc au ${fr(new Date(ref).toISOString())}</h3>
     ${zones.map(z => `${zones.length > 1 || z ? `<div style="font-weight:600;margin-top:10px">${esc(z || "Autres")}</div>` : ""}<table><tr><th>Équipement</th><th>Type</th><th>Dernier entretien</th><th>Prochain</th><th>Statut</th></tr>
       ${eqs.filter(e => (e.zone || "") === z).map(e => `<tr><td>${esc(e.emplacement)}${e.criticite === "critique" ? ' <span class="pill p-bad">Critique</span>' : ""}</td><td>${e.label}</td><td class="mono">${fr(e.dernier_preventif)}</td><td class="mono">${fr(new Date(e.next).toISOString())}</td><td><span class="pill ${e.d < 0 ? "p-bad" : e.d <= 14 ? "p-warn" : "p-ok"}">${e.d < 0 ? "En retard" : e.d <= 14 ? "Bientôt" : "À jour"}</span></td></tr>`).join("")}</table>`).join("") || '<p class="empty">Aucun équipement.</p>'}
