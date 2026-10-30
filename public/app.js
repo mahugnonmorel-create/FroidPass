@@ -380,7 +380,7 @@ function renderEq(id) {
   <div class="grid2" style="margin-top:10px">
     <div class="panel">
       <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><h3 style="font-size:23px">${t.ic} ${esc(e.emplacement)}</h3><span>${e.criticite && e.criticite !== "normale" ? `<span class="pill ${CRIT[e.criticite].cls}" style="margin-right:6px">Criticité ${CRIT[e.criticite].label.toLowerCase()}</span>` : ""}<span class="pill ${s.cls}">${s.txt}</span></span></div>
-      <p class="m">${esc(client(e.client_id).nom)} · ${t.label} · ${esc(e.marque)} ${esc(e.puissance)} · <span class="mono">${esc(e.fluide)}</span> · ${e.environnement === "cotier" ? "côtier" : "intérieur"}</p>
+      <p class="m">${esc(client(e.client_id).nom)} · ${t.label} · ${esc(e.marque)} ${esc(e.puissance)} · <span class="mono">${esc(e.fluide)}</span> · ${e.environnement === "cotier" ? "près de la mer / extérieur" : "à l'intérieur, à l'abri"}</p>
       <p style="margin:10px 0 16px;font-size:14px">Fréquence : <b>${freq(e)} jours</b>${e.frequence_jours ? " (personnalisée)" : ""} · Prochain entretien : <b class="mono">${fr(nextDue(e))}</b><br><span class="m">Points de contrôle : ${t.pts}</span></p>
       <h3>Nouvelle intervention</h3>
       <div class="ai"><b style="font-size:14.5px">Saisie rapide</b>
@@ -474,7 +474,7 @@ function openAddEq() {
     <label>Type<select class="field" name="type">${Object.entries(TYPES).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join("")}</select></label>
     <label>Criticité<select class="field" name="criticite"><option value="normale">Normale</option><option value="haute">Haute</option><option value="critique">Critique (bloc, pharmacie, serveur…)</option></select></label>
     <label>Fréquence personnalisée (jours)<input class="field" name="frequence_jours" type="number" min="7" max="730" placeholder="Auto selon le type"></label>
-    <label>Environnement<select class="field" name="environnement"><option value="cotier">Côtier / exposé</option><option value="interieur">Intérieur protégé</option></select></label>
+    <label>Environnement<select class="field" name="environnement"><option value="cotier">Près de la mer ou à l'extérieur (air salé, pluie, soleil)</option><option value="interieur">À l'intérieur, à l'abri</option></select></label>
     <label>Marque<input class="field" name="marque"></label>
     <label>Puissance<input class="field" name="puissance" placeholder="12 000 BTU, 3,5 kW…"></label>
     <label>Fluide frigorigène<select class="field" name="fluide"><option>R410A</option><option>R32</option><option>R22</option><option>R404A</option><option>R134a</option><option>R290</option><option>Autre</option></select></label>
@@ -497,7 +497,7 @@ function relance(id) {
   const e = S.eqs.find(x => x.id === id), c = client(e.client_id), s = status(e);
   const msg = isEnt()
     ? `Bonjour ${c.contact || ""},\n\nL'entretien préventif de l'équipement « ${e.emplacement} » (${TYPES[e.type].label}) du site ${c.nom} ${s.d < 0 ? "est en retard depuis le " + fr(nextDue(e)) : "est prévu le " + fr(nextDue(e))}.\n\nMerci de planifier l'intervention et de me confirmer la date. Points de contrôle : ${TYPES[e.type].pts}.\n\nFiche de l'équipement : ${publicUrl(e.code_public)}\n\n${S.tech.nom}${S.tech.entreprise ? " — " + S.tech.entreprise : ""}`
-    : `Bonjour ${c.contact || ""},\n\nC'est ${S.tech.nom}${S.tech.entreprise ? " (" + S.tech.entreprise + ")" : ""}. L'entretien préventif de votre équipement « ${e.emplacement} » ${s.d < 0 ? "est en retard depuis le " + fr(nextDue(e)) : "est prévu le " + fr(nextDue(e))}.\n\nUn entretien régulier évite les pannes et protège votre compresseur, surtout avec l'air salin. Quel créneau vous convient cette semaine ?\n\nVotre carnet d'entretien : ${publicUrl(e.code_public)}`;
+    : `Bonjour ${c.contact || ""},\n\nC'est ${S.tech.nom}${S.tech.entreprise ? " (" + S.tech.entreprise + ")" : ""}. L'entretien préventif de votre équipement « ${e.emplacement} » ${s.d < 0 ? "est en retard depuis le " + fr(nextDue(e)) : "est prévu le " + fr(nextDue(e))}.\n\nUn entretien régulier évite les pannes et protège votre compresseur, surtout avec l'air salé. Quel créneau vous convient cette semaine ?\n\nVotre carnet d'entretien : ${publicUrl(e.code_public)}`;
   modal(`<div class="panel"><h3>Message pour ${esc(c.nom)}</h3><p class="m">Destinataire : ${esc(c.whatsapp || "numéro non renseigné")}</p>
     <div class="msgbox" id="msgTxt">${esc(msg)}</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">

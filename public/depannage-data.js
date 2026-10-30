@@ -16,7 +16,7 @@ window.FAMILLES = {
   },
   capteur: {
     nom: "Sonde de température (thermistance)",
-    causes: ["Connecteur de sonde oxydé ou débranché (humidité, air salin)", "Sonde coupée ou en court-circuit", "Sonde mal positionnée sur la tuyauterie", "Entrée de la carte électronique défectueuse"],
+    causes: ["Connecteur de sonde oxydé ou débranché (humidité, air salé)", "Sonde coupée ou en court-circuit", "Sonde mal positionnée sur la tuyauterie", "Entrée de la carte électronique défectueuse"],
     verifs: ["Débrancher la sonde, mesurer sa résistance et la comparer à la table résistance/température du manuel (souvent 5, 10, 15 ou 20 kΩ à 25 °C selon le fabricant)", "Contrôler l'état du connecteur et du faisceau (oxydation fréquente en bord de mer)", "Vérifier la fixation et l'isolation de la sonde sur le tube", "Si la sonde est conforme : contrôler la tension de référence sur la carte"],
     racine: "Une sonde hors tolérance fausse la régulation : vérifier aussi si l'humidité ou les condensats ont atteint le connecteur.",
     niveau: "Technicien"
@@ -25,7 +25,7 @@ window.FAMILLES = {
     nom: "Protection haute pression / surchauffe condenseur",
     causes: ["Condenseur encrassé (poussière, sel, feuilles)", "Ventilateur extérieur à l'arrêt ou trop lent (condensateur, moteur)", "Recyclage d'air chaud : unité extérieure encastrée ou mal dégagée", "Surcharge en fluide frigorigène", "Incondensables dans le circuit (tirage au vide insuffisant)", "Pressostat HP défectueux"],
     verifs: ["Vérifier le dégagement et l'exposition au soleil de l'unité extérieure", "Nettoyer le condenseur (eau basse pression, produit adapté)", "Contrôler la rotation du ventilateur extérieur et le condensateur du moteur", "Mesurer HP et BP au manomètre, comparer aux valeurs attendues pour la température extérieure", "Calculer le sous-refroidissement : élevé = surcharge probable"],
-    racine: "En climat côtier, l'encrassement et la corrosion des ailettes du condenseur sont la première cause : rapprocher les nettoyages.",
+    racine: "Près de la mer (air salé), l'encrassement et la corrosion des ailettes du condenseur sont la première cause : rapprocher les nettoyages.",
     niveau: "Technicien (manipulation de fluide : attestation de capacité requise)"
   },
   basse_pression: {

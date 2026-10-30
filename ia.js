@@ -18,10 +18,10 @@ async function pg(env, path, { token, method = "GET", body, prefer = "return=rep
 }
 
 export function construirePrompt(eq, ph, obs) {
-  return `Tu es un technicien frigoriste et climaticien expert (maintenance CVC, normes NF / ISO, climat tropical côtier du Bénin).
+  return `Tu es un technicien frigoriste et climaticien expert (maintenance CVC, normes NF / ISO, climat tropical du Bénin, souvent près de la mer).
 Analyse la photo jointe. Contexte fourni par le technicien :
 - Équipement : ${TYPES[eq.type] || eq.type || "non précisé"}${eq.marque ? ", marque " + eq.marque : ""}${eq.puissance ? ", puissance " + eq.puissance : ""}${eq.fluide ? ", fluide " + eq.fluide : ""}
-- Environnement : ${eq.environnement === "cotier" ? "côtier (air salin, humidité élevée)" : "intérieur"}
+- Environnement : ${eq.environnement === "cotier" ? "près de la mer ou à l'extérieur (air salé, humidité élevée)" : "à l'intérieur, à l'abri"}
 - Photo : ${CAT[ph.categorie] || "photo"}${ph.legende ? ` — légende : « ${ph.legende} »` : ""}
 - Observations de l'intervention : ${obs || "aucune"}
 
