@@ -60,7 +60,7 @@ async function loadData(env) {
 
 function nextDue(e, ints) {
   const last = ints.filter(i => i.equipement_id === e.id && i.type === "preventif").sort((a, b) => b.date.localeCompare(a.date))[0];
-  const f = e.frequence_jours || FREQ[e.type]?.[e.environnement === "cotier" ? 0 : 1] || 90;
+  const f = e.frequence_jours || (F => F && (e.environnement === "cotier" ? F[0] : e.environnement === "exterieur" ? Math.round((F[0] + F[1]) / 30) * 15 : F[1]))(FREQ[e.type]) || 90;
   return Date.parse(last ? last.date : e.date_pose) + f * DAY;
 }
 

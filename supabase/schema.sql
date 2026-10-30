@@ -32,7 +32,7 @@ create table if not exists public.equipements (
   client_id      uuid not null references public.clients(id) on delete cascade,
   emplacement    text not null,
   type           text not null check (type in ('split','cassette','groupe','chambre','vitrine')),
-  environnement  text not null default 'cotier' check (environnement in ('cotier','interieur')),
+  environnement  text not null default 'cotier' check (environnement in ('cotier','exterieur','interieur')),
   marque         text default '',
   puissance      text default '',
   fluide         text default '',

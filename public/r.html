@@ -37,7 +37,7 @@ try {
   if (error) throw error; if (!data) throw new Error("Rapport introuvable");
   const finMois = P.fin - 864e5, _n = new Date(), today = Date.UTC(_n.getFullYear(), _n.getMonth(), _n.getDate());
   const ref = Math.min(finMois, today), libelle = P.lib;
-  const eqs = data.equipements.map(e => { const t = TYPES[e.type] || ["Équipement",90,90], f = e.frequence_jours || (e.environnement === "cotier" ? t[1] : t[2]); const next = Date.parse(e.dernier_preventif || e.date_pose) + f * 864e5; return { ...e, label: t[0], next, d: Math.round((next - ref) / 864e5) }; });
+  const eqs = data.equipements.map(e => { const t = TYPES[e.type] || ["Équipement",90,90], f = e.frequence_jours || (e.environnement === "cotier" ? t[1] : e.environnement === "exterieur" ? Math.round((t[1] + t[2]) / 30) * 15 : t[2]); const next = Date.parse(e.dernier_preventif || e.date_pose) + f * 864e5; return { ...e, label: t[0], next, d: Math.round((next - ref) / 864e5) }; });
   const late = eqs.filter(e => e.d < 0).length, pct = eqs.length ? Math.round(100 * (eqs.length - late) / eqs.length) : 0;
   const ints = data.interventions, prev = ints.filter(i => i.type === "preventif").length;
   const pr = data.prestataire || {}, zones = [...new Set(eqs.map(e => e.zone || ""))];

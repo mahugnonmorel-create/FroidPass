@@ -33,7 +33,7 @@ try {
   if (!data) throw new Error("Équipement introuvable");
   const e = data.equipement, t = TYPES[e.type] || ["Équipement","❄️",90,90], tech = data.technicien, ints = data.interventions;
   const lastP = ints.find(x => x.type === "preventif");
-  const f = e.frequence_jours || (e.environnement === "cotier" ? t[2] : t[3]);
+  const f = e.frequence_jours || (e.environnement === "cotier" ? t[2] : e.environnement === "exterieur" ? Math.round((t[2] + t[3]) / 30) * 15 : t[3]);
   const next = new Date(Date.parse(lastP ? lastP.date : e.date_pose) + f*864e5).toISOString().slice(0,10);
   const d = Math.round((Date.parse(next) - TODAY)/864e5);
   const st = d < 0 ? ["p-bad", `Entretien en retard de ${-d} j`] : d <= 14 ? ["p-warn", `Entretien dans ${d} j`] : ["p-ok", "À jour"];

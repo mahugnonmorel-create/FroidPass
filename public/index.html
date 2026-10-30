@@ -456,7 +456,7 @@ function eqDetail(e){
   <div class="layout">
     <div class="panel">
       <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><h3 style="font-size:24px">${t.ic} ${esc(e.lieu)}</h3><span class="pill ${s.cls}">${s.txt}</span></div>
-      <p class="m" style="color:var(--ink2)">${esc(c.nom)} · ${t.label} · ${esc(e.marque)} ${esc(e.puiss)} · <span class="mono">${esc(e.fluide)}</span> · ${e.env==='cot'?'près de la mer / extérieur':'à l\'intérieur, à l\'abri'}</p>
+      <p class="m" style="color:var(--ink2)">${esc(c.nom)} · ${t.label} · ${esc(e.marque)} ${esc(e.puiss)} · <span class="mono">${esc(e.fluide)}</span> · ${e.env==='cot'?'près de la mer':'à l\'intérieur, à l\'abri'}</p>
       <p style="margin:10px 0 18px;font-size:14px">Fréquence préventive : <b>tous les ${freq(e)} jours</b> · Prochain entretien : <b class="mono">${fr(nextDue(e))}</b><br><span style="color:var(--ink2)">Points de contrôle : ${t.pts}</span></p>
       <h3>Nouvelle intervention</h3>
       <div class="ai">
@@ -554,7 +554,7 @@ function openAdd(){
         <label class="full">Nouveau client (si besoin)<input class="field" name="newc" placeholder="Ex. Supermarché Erevan – M. Kpodo"></label>
         <label class="full">Emplacement<input class="field" name="lieu" placeholder="Ex. Salle serveur, Chambre 7" required></label>
         <label>Type<select class="field" name="type">${Object.entries(TYPES).map(([k,v])=>`<option value="${k}">${v.label}</option>`).join("")}</select></label>
-        <label>Environnement<select class="field" name="env"><option value="cot">Près de la mer ou à l'extérieur</option><option value="int">À l'intérieur, à l'abri</option></select></label>
+        <label>Environnement<select class="field" name="env"><option value="cot">Près de la mer (air salé)</option><option value="int">À l'intérieur, à l'abri</option></select></label>
         <label>Marque<input class="field" name="marque"></label>
         <label>Puissance<input class="field" name="puiss" placeholder="12 000 BTU, 3,5 kW…"></label>
         <label>Fluide frigorigène<select class="field" name="fluide"><option>R410A</option><option>R32</option><option>R22</option><option>R404A</option><option>R134a</option><option>R290</option><option>Autre</option></select></label>

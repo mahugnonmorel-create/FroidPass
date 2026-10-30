@@ -53,7 +53,10 @@ document.addEventListener("click", e => { if (e.target.matches("[data-close]")) 
 const publicUrl = code => location.origin + "/e.html?c=" + code;
 const client = id => S.clients.find(c => c.id === id) || {};
 const intsOf = id => S.ints.filter(x => x.equipement_id === id).sort((a, b) => b.date.localeCompare(a.date));
-const freq = e => e.frequence_jours || (TYPES[e.type] || TYPES.split)[e.environnement];
+// Fréquence par défaut selon l'emplacement : près de la mer (le plus court), dehors loin de la mer (intermédiaire), à l'abri
+const ENV = { cotier: ["Près de la mer (air salé)", "près de la mer"], exterieur: ["Loin de la mer, dehors (soleil, pluie, poussière)", "dehors, loin de la mer"], interieur: ["À l'intérieur, à l'abri (pièce fermée, local technique)", "à l'intérieur, à l'abri"] };
+const freqDefaut = (type, env) => { const t = TYPES[type] || TYPES.split; return env === "cotier" ? t.cotier : env === "exterieur" ? Math.round((t.cotier + t.interieur) / 30) * 15 : t.interieur; };
+const freq = e => e.frequence_jours || freqDefaut(e.type, e.environnement);
 function nextDue(e) {
   const last = intsOf(e.id).find(x => x.type === "preventif");
   return iso(Date.parse(last ? last.date : e.date_pose) + freq(e) * DAY);
@@ -380,7 +383,7 @@ function renderEq(id) {
   <div class="grid2" style="margin-top:10px">
     <div class="panel">
       <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><h3 style="font-size:23px">${t.ic} ${esc(e.emplacement)}</h3><span>${e.criticite && e.criticite !== "normale" ? `<span class="pill ${CRIT[e.criticite].cls}" style="margin-right:6px">Criticité ${CRIT[e.criticite].label.toLowerCase()}</span>` : ""}<span class="pill ${s.cls}">${s.txt}</span></span></div>
-      <p class="m">${esc(client(e.client_id).nom)} · ${t.label} · ${esc(e.marque)} ${esc(e.puissance)} · <span class="mono">${esc(e.fluide)}</span> · ${e.environnement === "cotier" ? "près de la mer / extérieur" : "à l'intérieur, à l'abri"}</p>
+      <p class="m">${esc(client(e.client_id).nom)} · ${t.label} · ${esc(e.marque)} ${esc(e.puissance)} · <span class="mono">${esc(e.fluide)}</span> · ${(ENV[e.environnement] || ENV.cotier)[1]}</p>
       <p style="margin:10px 0 16px;font-size:14px">Fréquence : <b>${freq(e)} jours</b>${e.frequence_jours ? " (personnalisée)" : ""} · Prochain entretien : <b class="mono">${fr(nextDue(e))}</b><br><span class="m">Points de contrôle : ${t.pts}</span></p>
       <h3>Nouvelle intervention</h3>
       <div class="ai"><b style="font-size:14.5px">Saisie rapide</b>
@@ -474,13 +477,17 @@ function openAddEq() {
     <label>Type<select class="field" name="type">${Object.entries(TYPES).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join("")}</select></label>
     <label>Criticité<select class="field" name="criticite"><option value="normale">Normale</option><option value="haute">Haute</option><option value="critique">Critique (bloc, pharmacie, serveur…)</option></select></label>
     <label>Fréquence personnalisée (jours)<input class="field" name="frequence_jours" type="number" min="7" max="730" placeholder="Auto selon le type"></label>
-    <label>Environnement<select class="field" name="environnement"><option value="cotier">Près de la mer ou à l'extérieur (air salé, pluie, soleil)</option><option value="interieur">À l'intérieur, à l'abri</option></select></label>
+    <label class="full">Où est installé l'équipement ? <span class="m">(split, cassette, VRV : là où se trouve l'unité extérieure)</span><select class="field" name="environnement" required><option value="">— Choisir —</option>${Object.entries(ENV).map(([k, [l]]) => `<option value="${k}">${l}</option>`).join("")}</select><span class="m" id="envAide"></span></label>
     <label>Marque<input class="field" name="marque"></label>
     <label>Puissance<input class="field" name="puissance" placeholder="12 000 BTU, 3,5 kW…"></label>
     <label>Fluide frigorigène<select class="field" name="fluide"><option>R410A</option><option>R32</option><option>R22</option><option>R404A</option><option>R134a</option><option>R290</option><option>Autre</option></select></label>
     <label>Date de pose<input class="field" type="date" name="date_pose" value="${iso(TODAY)}"></label>
     <div class="full" style="display:flex;gap:8px"><button class="btn btn-hot" type="submit">Créer et générer le QR</button><button class="btn btn-ghost" type="button" data-close>Annuler</button></div>
   </form></div>`);
+  // Emplacement proposé : celui déjà utilisé le plus souvent pour ce client (modifiable) ; fréquence affichée en direct
+  const fEq = document.getElementById("eqForm"), envAide = () => { const v = fEq.environnement.value; document.getElementById("envAide").textContent = v ? `Entretien préventif conseillé : tous les ${freqDefaut(fEq.type.value, v)} jours` : ""; };
+  const envClient = () => { const n = {}; S.eqs.filter(e => e.client_id === fEq.client_id.value).forEach(e => n[e.environnement] = (n[e.environnement] || 0) + 1); const best = Object.entries(n).sort((a, b) => b[1] - a[1])[0]; fEq.environnement.value = best ? best[0] : ""; envAide(); };
+  fEq.client_id.onchange = envClient; fEq.environnement.onchange = envAide; fEq.type.onchange = envAide; envClient();
   document.getElementById("eqForm").onsubmit = async ev => {
     ev.preventDefault(); const o = Object.fromEntries(new FormData(ev.target));
     if (!o.zone) delete o.zone;

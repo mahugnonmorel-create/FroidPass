@@ -21,7 +21,7 @@ export function construirePrompt(eq, ph, obs) {
   return `Tu es un technicien frigoriste et climaticien expert (maintenance CVC, normes NF / ISO, climat tropical du Bénin, souvent près de la mer).
 Analyse la photo jointe. Contexte fourni par le technicien :
 - Équipement : ${TYPES[eq.type] || eq.type || "non précisé"}${eq.marque ? ", marque " + eq.marque : ""}${eq.puissance ? ", puissance " + eq.puissance : ""}${eq.fluide ? ", fluide " + eq.fluide : ""}
-- Environnement : ${eq.environnement === "cotier" ? "près de la mer ou à l'extérieur (air salé, humidité élevée)" : "à l'intérieur, à l'abri"}
+- Environnement : ${{ cotier: "près de la mer (air salé, humidité élevée, corrosion rapide)", exterieur: "dehors, loin de la mer (soleil, pluie, poussière, harmattan)", interieur: "à l'intérieur, à l'abri" }[eq.environnement] || "non précisé"}
 - Photo : ${CAT[ph.categorie] || "photo"}${ph.legende ? ` — légende : « ${ph.legende} »` : ""}
 - Observations de l'intervention : ${obs || "aucune"}
 
