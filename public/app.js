@@ -14,15 +14,24 @@ const TYPES = {
   cassette: { label: "Cassette / gainable", ic: "🌀", cotier: 60, interieur: 90, pts: "Bac et pompe de relevage, filtres, équilibrage" },
   groupe:   { label: "Groupe extérieur", ic: "🔆", cotier: 60, interieur: 90, pts: "Corrosion ailettes condenseur, serrage bornes, condensateur" },
   chambre:  { label: "Chambre froide", ic: "🧊", cotier: 30, interieur: 30, pts: "Joints de porte, dégivrage, consigne, alarme" },
-  vitrine:  { label: "Armoire / vitrine réfrigérée", ic: "🥶", cotier: 60, interieur: 90, pts: "Condenseur, joints, thermostat" }
+  vitrine:  { label: "Armoire / vitrine réfrigérée", ic: "🥶", cotier: 60, interieur: 90, pts: "Condenseur, joints, thermostat" },
+  // Grands sites / hôpitaux (fréquences de départ, à ajuster selon le fabricant et les procédures du site)
+  vrv:               { label: "VRV / DRV (unité extérieure)", ic: "🏢", cotier: 60, interieur: 90, pts: "Échangeurs, pressions, intensité, communication des unités, corrosion" },
+  cta:               { label: "Centrale de traitement d'air (CTA)", ic: "🌬️", cotier: 30, interieur: 30, pts: "Filtres (perte de charge), courroies, batteries, bac à condensats, hygiène" },
+  eau_glacee:        { label: "Groupe d'eau glacée", ic: "💧", cotier: 30, interieur: 30, pts: "Pressions, températures départ/retour, débit, compresseurs, traitement d'eau" },
+  clim_precision:    { label: "Climatisation de précision (salle serveur)", ic: "🖥️", cotier: 30, interieur: 30, pts: "Consigne température/humidité, filtres, alarmes, redondance" },
+  frigo_medical:     { label: "Réfrigérateur médical / vaccins / labo", ic: "💉", cotier: 30, interieur: 30, pts: "Température 2–8 °C, enregistreur, alarme, joints, dégivrage" },
+  chambre_mortuaire: { label: "Chambre mortuaire", ic: "🏥", cotier: 30, interieur: 30, pts: "Température, groupe froid, joints, alarme, hygiène" },
+  ventilation:       { label: "Ventilation / extraction", ic: "🌀", cotier: 90, interieur: 90, pts: "Moteur, courroies, filtres, débit, bruit" }
 };
+const CRIT = { normale: { label: "Normale", cls: "" }, haute: { label: "Haute", cls: "p-warn" }, critique: { label: "Critique", cls: "p-bad" } };
 const PLANS = [
   { id: "fondateur",      nom: "Membre fondateur", prix: 15000, detail: "3 mois de Solo, puis prix bloqué à 10 000 FCFA", hot: true },
   { id: "solo_mensuel",   nom: "Solo · 1 mois",  prix: 10000,  detail: "60 équipements, relances, certificat" },
   { id: "solo_annuel",    nom: "Solo · 12 mois", prix: 100000, detail: "10 mois payés pour 12" },
   { id: "pro_mensuel",    nom: "Pro · 1 mois",   prix: 20000,  detail: "Équipements illimités" },
   { id: "pro_annuel",     nom: "Pro · 12 mois",  prix: 200000, detail: "10 mois payés pour 12" },
-  { id: "equipe_mensuel", nom: "Équipe · 1 mois", prix: 40000, detail: "Illimité, pour une équipe" }
+  { id: "equipe_mensuel", nom: "Équipe · 1 mois", prix: 40000, detail: "Illimité, multi-sites, planning général" }
 ];
 const DAY = 864e5;
 const _n = new Date();
@@ -33,7 +42,7 @@ const fcfa = n => Number(n).toLocaleString("fr-FR").replace(/ | /g, " ") + " 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
 const waNum = s => String(s || "").replace(/\D/g, "");
 
-let S = { user: null, tech: null, clients: [], eqs: [], ints: [], pays: [] };
+let S = { user: null, tech: null, clients: [], eqs: [], ints: [], pays: [], sigs: [] };
 
 // ---------- Outils ----------
 let tt;
@@ -43,7 +52,7 @@ document.addEventListener("click", e => { if (e.target.matches("[data-close]")) 
 const publicUrl = code => location.origin + "/e.html?c=" + code;
 const client = id => S.clients.find(c => c.id === id) || {};
 const intsOf = id => S.ints.filter(x => x.equipement_id === id).sort((a, b) => b.date.localeCompare(a.date));
-const freq = e => TYPES[e.type][e.environnement];
+const freq = e => e.frequence_jours || (TYPES[e.type] || TYPES.split)[e.environnement];
 function nextDue(e) {
   const last = intsOf(e.id).find(x => x.type === "preventif");
   return iso(Date.parse(last ? last.date : e.date_pose) + freq(e) * DAY);
@@ -85,6 +94,8 @@ async function loadAll() {
     sb.from("paiements").select("*").order("created_at", { ascending: false })
   ]);
   for (const r of [t, c, e, i, p]) if (r.error) throw r.error;
+  const sg = await sb.from("signalements").select("*").order("created_at", { ascending: false });
+  S.sigs = sg.error ? [] : sg.data;
   S.tech = t.data; S.clients = c.data; S.eqs = e.data; S.ints = i.data; S.pays = p.data;
 }
 
@@ -103,6 +114,7 @@ async function route() {
   if (h.startsWith("siteqr-")) return renderSiteQR(h.slice(7));
   if (h === "etiquettes") return renderLabels();
   if (h === "rapport-global") return renderRapportGlobal();
+  if (h === "planning") return renderPlanning();
   if (h === "parc") return renderParc();
   if (h === "clients") return renderClients();
   if (h === "abonnement") return renderAbo();
@@ -124,7 +136,7 @@ function renderAuth(mode, profilInit = "technicien") {
     <form class="form" id="authForm" style="grid-template-columns:1fr">
       ${ins ? `<label>Je suis…<select class="field" name="profil" id="profilSel">
         <option value="technicien" ${profilInit === "technicien" ? "selected" : ""}>Technicien / prestataire de maintenance</option>
-        <option value="entreprise" ${profilInit === "entreprise" ? "selected" : ""}>Chef d'entreprise / gestionnaire de sites</option></select></label>
+        <option value="entreprise" ${profilInit === "entreprise" ? "selected" : ""}>Chef d'entreprise / gestionnaire de sites</option><option value="entreprise">Responsable maintenance (hôpital, grand site)</option></select></label>
       <label>Nom complet<input class="field" name="nom" required></label>
       <label>Entreprise<input class="field" name="entreprise" placeholder="Nom de votre entreprise (facultatif)"></label>
       <label>Numéro WhatsApp<input class="field" name="whatsapp" placeholder="+229 01 XX XX XX XX" required></label>
@@ -167,6 +179,7 @@ function renderTableau() {
   $view.innerHTML = `
   <h1 style="font-size:30px;margin-bottom:6px">Bonjour ${esc((S.tech.nom || "").split(" ")[0])}</h1>
   <p class="m" style="margin-bottom:16px">Offre : <b>${labelOffre()}</b>${S.tech.fondateur ? " · Membre fondateur" : ""}</p>
+  ${sigsHTML(S.sigs.filter(x => x.statut !== "resolu"), true)}
   ${!S.tech.whatsapp || !S.tech.nom ? `<div class="panel" style="border-color:var(--heat)">Complétez votre <a href="#profil">profil</a> (nom, entreprise, WhatsApp) : ces informations apparaissent sur vos carnets QR et vos certificats.</div>` : ""}
   <div class="kpis">
     <div class="kpi"><b>${S.clients.length}</b><span>${w.clients}</span></div>
@@ -199,7 +212,7 @@ function eqRow(e) {
   const s = status(e), t = TYPES[e.type];
   return `<a class="row" href="#eq-${e.id}"><div class="ic">${t.ic}</div>
     <div><div class="t">${esc(e.emplacement)}</div><div class="m">${esc(client(e.client_id).nom)}${e.zone ? " · " + esc(e.zone) : ""} · ${t.label} · ${esc(e.marque)} ${esc(e.puissance)}</div></div>
-    <span class="pill ${s.cls}">${s.txt}</span></a>`;
+    <span>${e.criticite === "critique" ? '<span class="pill p-bad" style="margin-right:4px">Critique</span>' : ""}<span class="pill ${s.cls}">${s.txt}</span></span></a>`;
 }
 
 function renderParc() {
@@ -230,9 +243,9 @@ function renderEq(id) {
   $view.innerHTML = `<a href="#parc" class="m">← Retour au parc</a>
   <div class="grid2" style="margin-top:10px">
     <div class="panel">
-      <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><h3 style="font-size:23px">${t.ic} ${esc(e.emplacement)}</h3><span class="pill ${s.cls}">${s.txt}</span></div>
+      <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><h3 style="font-size:23px">${t.ic} ${esc(e.emplacement)}</h3><span>${e.criticite && e.criticite !== "normale" ? `<span class="pill ${CRIT[e.criticite].cls}" style="margin-right:6px">Criticité ${CRIT[e.criticite].label.toLowerCase()}</span>` : ""}<span class="pill ${s.cls}">${s.txt}</span></span></div>
       <p class="m">${esc(client(e.client_id).nom)} · ${t.label} · ${esc(e.marque)} ${esc(e.puissance)} · <span class="mono">${esc(e.fluide)}</span> · ${e.environnement === "cotier" ? "côtier" : "intérieur"}</p>
-      <p style="margin:10px 0 16px;font-size:14px">Fréquence : <b>${freq(e)} jours</b> · Prochain entretien : <b class="mono">${fr(nextDue(e))}</b><br><span class="m">Points de contrôle : ${t.pts}</span></p>
+      <p style="margin:10px 0 16px;font-size:14px">Fréquence : <b>${freq(e)} jours</b>${e.frequence_jours ? " (personnalisée)" : ""} · Prochain entretien : <b class="mono">${fr(nextDue(e))}</b><br><span class="m">Points de contrôle : ${t.pts}</span></p>
       <h3>Nouvelle intervention</h3>
       <div class="ai"><b style="font-size:14.5px">Saisie rapide</b>
         <p class="m" style="margin:4px 0 8px">Écrivez comme vous parlez, l'application remplit la fiche.</p>
@@ -258,6 +271,7 @@ function renderEq(id) {
           <a class="btn btn-ghost btn-sm" href="#cert-${e.id}">Certificat d'entretien</a>
           <button class="btn btn-teal btn-sm" data-relance="${e.id}">Relance WhatsApp</button>
           <button class="btn btn-ghost btn-sm" id="delEq" style="color:var(--bad)">Supprimer</button></div></div></div>
+      ${sigsHTML(S.sigs.filter(x => x.equipement_id === e.id && x.statut !== "resolu"))}
       <div class="panel"><h3>Historique</h3><div class="hist">${list.length ? list.map(x => `
         <div class="it"><b class="mono" style="font-size:13.5px">${fr(x.date)}</b> · <b>${x.type === "preventif" ? "Préventif" : "Curatif"}</b>
           <button class="btn btn-sm noprint" style="padding:0 6px;color:var(--mute);background:none" data-delint="${x.id}" title="Supprimer">✕</button>
@@ -315,6 +329,8 @@ function openAddEq() {
     <label>Zone (facultatif)<input class="field" name="zone" list="zones" placeholder="Bâtiment A, Restaurant…"><datalist id="zones">${[...new Set(S.eqs.map(e => e.zone).filter(Boolean))].map(z => `<option value="${esc(z)}">`).join("")}</datalist></label>
     <label>Emplacement<input class="field" name="emplacement" placeholder="Ex. Chambre 12, Cuisine" required></label>
     <label>Type<select class="field" name="type">${Object.entries(TYPES).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join("")}</select></label>
+    <label>Criticité<select class="field" name="criticite"><option value="normale">Normale</option><option value="haute">Haute</option><option value="critique">Critique (bloc, pharmacie, serveur…)</option></select></label>
+    <label>Fréquence personnalisée (jours)<input class="field" name="frequence_jours" type="number" min="7" max="730" placeholder="Auto selon le type"></label>
     <label>Environnement<select class="field" name="environnement"><option value="cotier">Côtier / exposé</option><option value="interieur">Intérieur protégé</option></select></label>
     <label>Marque<input class="field" name="marque"></label>
     <label>Puissance<input class="field" name="puissance" placeholder="12 000 BTU, 3,5 kW…"></label>
@@ -325,6 +341,8 @@ function openAddEq() {
   document.getElementById("eqForm").onsubmit = async ev => {
     ev.preventDefault(); const o = Object.fromEntries(new FormData(ev.target));
     if (!o.zone) delete o.zone;
+    if (o.criticite === "normale") delete o.criticite;
+    if (!o.frequence_jours) delete o.frequence_jours; else o.frequence_jours = Number(o.frequence_jours);
     const { data, error } = await sb.from("equipements").insert(o).select().single();
     if (error) { toast(error.message.startsWith("QUOTA") ? error.message.replace("QUOTA: ", "") : error.message); return; }
     modal(""); await loadAll(); location.hash = "eq-" + data.id; toast("Équipement créé · QR prêt");
@@ -348,8 +366,8 @@ function relance(id) {
 function renderClients() {
   $view.innerHTML = `<h1 style="font-size:28px;margin-bottom:14px">${W().Clients}</h1>
   <div class="grid2"><div class="panel">${S.clients.map(c => {
-    const n = S.eqs.filter(e => e.client_id === c.id).length;
-    return `<div class="row" style="cursor:default"><div class="ic">🏢</div><div><div class="t">${esc(c.nom)}</div><div class="m">${esc(c.contact)} · ${esc(c.whatsapp)} · ${n} équipement(s)</div></div>
+    const n = S.eqs.filter(e => e.client_id === c.id).length, st = statsSite(c);
+    return `<div class="row" style="cursor:default"><div class="ic">🏢</div><div><div class="t">${esc(c.nom)} ${st.pct == null ? "" : `<span class="pill ${st.pct >= 90 ? "p-ok" : st.pct >= 70 ? "p-warn" : "p-bad"}">${st.pct} % à jour</span>`}${st.late ? ` <span class="pill p-bad">${st.late} en retard</span>` : ""}</div><div class="m">${esc(c.contact)} · ${esc(c.whatsapp)} · ${n} équipement(s) · prochain entretien ${fr(st.prochain)}</div></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end"><a class="btn btn-teal btn-sm" href="#rapport-${c.id}">Rapport du site</a><a class="btn btn-ghost btn-sm" href="#siteqr-${c.id}">QR du site</a><button class="btn btn-ghost btn-sm" data-delcli="${c.id}" style="color:var(--bad)">Supprimer</button></div></div>`;
   }).join("") || `<p class="empty">Aucun ${W().client} pour l'instant.</p>`}</div>
   <div class="panel"><h3>${W().nouveauClient}</h3><form class="form" id="cliForm" style="grid-template-columns:1fr">
@@ -608,7 +626,7 @@ function vueSites() {
   if (S.clients.length < 1) return "";
   const rows = S.clients.map(c => ({ c, s: statsSite(c) })).sort((a, b) => (a.s.pct ?? 101) - (b.s.pct ?? 101));
   return `<div class="panel" style="margin-top:16px"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
-    <h3 style="margin:0">Vue ${isEnt() ? "multi-sites" : "par client"}</h3><a class="btn btn-ghost btn-sm" href="#rapport-global">Rapport consolidé</a></div>
+    <h3 style="margin:0">Vue ${isEnt() ? "multi-sites" : "par client"}</h3><span style="display:flex;gap:6px"><a class="btn btn-teal btn-sm" href="#planning">Planning préventif</a><a class="btn btn-ghost btn-sm" href="#rapport-global">Rapport consolidé</a></span></div>
     <div style="overflow-x:auto"><table class="tbl"><tbody>
     <tr><th>${W().Clients.slice(0, -1)}</th><th>Équipements</th><th>À jour</th><th>En retard</th><th>Interventions 30 j</th><th>Prochain entretien</th><th></th></tr>
     ${rows.map(({ c, s }) => `<tr><td><b>${esc(c.nom)}</b></td><td>${s.eqs}</td><td>${s.pct == null ? "—" : `<span class="pill ${s.pct >= 90 ? "p-ok" : s.pct >= 70 ? "p-warn" : "p-bad"}">${s.pct} %</span>`}</td><td style="color:${s.late ? "var(--bad)" : "inherit"}">${s.late}</td><td>${s.ints30}</td><td class="mono">${fr(s.prochain)}</td><td><a href="#rapport-${c.id}">Rapport</a></td></tr>`).join("")}
@@ -633,4 +651,89 @@ function renderRapportGlobal() {
   <h3 style="font-size:17px;margin-top:22px">Équipements en retard (${retards.length})</h3>
   ${retards.length ? `<table><tr><th>${W().Clients.slice(0, -1)}</th><th>Équipement</th><th>Type</th><th>Échéance dépassée</th></tr>${retards.map(e => `<tr><td>${esc(client(e.client_id).nom)}</td><td>${esc(e.emplacement)}${e.zone ? " · " + esc(e.zone) : ""}</td><td>${TYPES[e.type].label}</td><td class="mono" style="color:var(--bad)">${fr(nextDue(e))}</td></tr>`).join("")}</table>` : `<p style="font-size:14px">Aucun équipement en retard. ✅</p>`}
   <p class="m" style="margin-top:18px">Généré par FroidPass</p></div>`;
+}
+
+
+// =====================================================================
+// SIGNALEMENTS DE PANNE (envoyés par le personnel du site via le QR)
+// =====================================================================
+function sigsHTML(list, global = false) {
+  if (!list.length) return "";
+  const eqOf = id => S.eqs.find(e => e.id === id) || {};
+  return `<div class="panel" style="border:2px solid var(--bad)"><h3>🚨 ${list.length} signalement(s) de panne ${global ? "à traiter" : "ouvert(s)"}</h3>
+  ${list.map(x => { const e = eqOf(x.equipement_id); return `<div style="padding:10px 0;border-top:1px solid var(--line)">
+    <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><b>${global ? `<a href="#eq-${e.id}">${esc(e.emplacement || "?")}</a> · ${esc(client(e.client_id).nom || "")}` : "Signalement"}</b><span class="m">${fr(x.created_at)} · ${x.statut === "nouveau" ? "Nouveau" : "En cours"}</span></div>
+    <div style="margin:4px 0">${esc(x.description)}</div>
+    <div class="m">${esc(x.nom)} ${x.telephone ? "· " + esc(x.telephone) : ""}</div>
+    <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+      ${x.telephone ? `<a class="btn btn-ghost btn-sm" target="_blank" rel="noopener" href="https://wa.me/${waNum(x.telephone)}?text=${encodeURIComponent("Bonjour, nous avons bien reçu votre signalement concernant « " + (e.emplacement || "") + " ». Intervention en cours de planification.")}">Répondre</a>` : ""}
+      ${x.statut === "nouveau" ? `<button class="btn btn-teal btn-sm" data-sig="${x.id}" data-st="en_cours">Prendre en charge</button>` : ""}
+      <button class="btn btn-hot btn-sm" data-sig="${x.id}" data-st="resolu">Marquer résolu</button></div></div>`; }).join("")}</div>`;
+}
+document.addEventListener("click", async ev => {
+  const b = ev.target.closest("[data-sig]"); if (!b) return;
+  b.disabled = true;
+  const patch = { statut: b.dataset.st }; if (b.dataset.st === "resolu") patch.resolu_at = new Date().toISOString();
+  const { error } = await sb.from("signalements").update(patch).eq("id", b.dataset.sig);
+  if (error) { toast(error.message); b.disabled = false; return; }
+  await loadAll(); route(); toast(b.dataset.st === "resolu" ? "Signalement résolu · pensez à enregistrer l'intervention curative" : "Signalement pris en charge");
+});
+
+
+// =====================================================================
+// PLANNING GÉNÉRAL DE MAINTENANCE PRÉVENTIVE (tous les sites)
+// =====================================================================
+let PL = { horizon: 60, site: "", crit: "" };
+function occurrences(horizonJours) {
+  const fin = TODAY + horizonJours * DAY, out = [];
+  for (const e of S.eqs) {
+    if (PL.site && e.client_id !== PL.site) continue;
+    if (PL.crit && (e.criticite || "normale") !== PL.crit) continue;
+    const f = freq(e) * DAY; let d = Date.parse(nextDue(e));
+    if (d < TODAY) { out.push({ e, d, retard: true }); d = TODAY + f; }  // en retard : à faire maintenant, puis le cycle reprend
+    for (; d <= fin; d += f) out.push({ e, d, retard: false });
+  }
+  return out.sort((a, b) => (b.retard - a.retard) || a.d - b.d || ((b.e.criticite === "critique") - (a.e.criticite === "critique")));
+}
+function lundi(t) { const x = new Date(t), j = (x.getUTCDay() + 6) % 7; return t - j * DAY; }
+function renderPlanning() {
+  const occ = occurrences(PL.horizon), retards = occ.filter(o => o.retard), avenir = occ.filter(o => !o.retard);
+  const semaines = {}; for (const o of avenir) (semaines[lundi(o.d)] ||= []).push(o);
+  const parSite = S.clients.map(c => ({ c, n: occ.filter(o => o.e.client_id === c.id).length, r: retards.filter(o => o.e.client_id === c.id).length })).filter(x => x.n);
+  const charge = Object.keys(semaines).map(Number).sort((a, b) => a - b);
+  const maxSem = Math.max(1, ...charge.map(k => semaines[k].length));
+  const ligne = o => `<tr><td class="mono" style="color:${o.retard ? "var(--bad)" : "inherit"}">${o.retard ? "En retard (" + fr(nextDue(o.e)) + ")" : fr(iso(o.d))}</td><td>${esc(client(o.e.client_id).nom)}</td><td><a href="#eq-${o.e.id}">${esc(o.e.emplacement)}</a>${o.e.zone ? `<div class="m">${esc(o.e.zone)}</div>` : ""}</td><td>${TYPES[o.e.type]?.label || o.e.type}</td><td>${o.e.criticite && o.e.criticite !== "normale" ? `<span class="pill ${CRIT[o.e.criticite].cls}">${CRIT[o.e.criticite].label}</span>` : "—"}</td><td style="font-size:12.5px">${TYPES[o.e.type]?.pts || ""}</td></tr>`;
+  const entete = `<tr><th>Date</th><th>${W().Clients.slice(0, -1)}</th><th>Équipement</th><th>Type</th><th>Criticité</th><th>Points de contrôle</th></tr>`;
+  $view.innerHTML = `<div class="noprint" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
+      <h1 style="font-size:28px;margin-right:auto">Planning préventif</h1>
+      <select class="field" id="plH" style="width:auto;padding:7px 10px"><option value="30">30 jours</option><option value="60">60 jours</option><option value="90">90 jours</option><option value="180">6 mois</option><option value="365">12 mois</option></select>
+      <select class="field" id="plS" style="width:auto;padding:7px 10px"><option value="">Tous les ${W().clients}</option>${S.clients.map(c => `<option value="${c.id}">${esc(c.nom)}</option>`).join("")}</select>
+      <select class="field" id="plC" style="width:auto;padding:7px 10px"><option value="">Toutes criticités</option><option value="critique">Critique</option><option value="haute">Haute</option><option value="normale">Normale</option></select>
+      <button class="btn btn-ghost btn-sm" id="plCsv">Exporter (Excel)</button>
+      <button class="btn btn-hot btn-sm" onclick="print()">Imprimer</button></div>
+  <div class="cert" style="max-width:none">
+    <div class="ch"><div><div class="disp" style="font-size:24px;font-weight:800">Planning de maintenance préventive</div>
+      <div class="m">${PL.site ? esc(client(PL.site).nom) : `Tous les ${W().clients} (${S.clients.length})`} · du ${fr(iso(TODAY))} au ${fr(iso(TODAY + PL.horizon * DAY))}</div></div>
+      <div style="text-align:right;font-size:14px"><b>${esc(S.tech.entreprise || S.tech.nom)}</b><br><span class="m">Édité le ${fr(iso(TODAY))}</span></div></div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px">
+      ${[[occ.length, "interventions planifiées"], [retards.length, "en retard"], [occ.filter(o => o.e.criticite === "critique").length, "sur équipements critiques"], [parSite.length, W().clients + " concernés"]].map(([v, l], k) => `<div style="border:1px solid var(--line);border-radius:10px;padding:10px;text-align:center"><div class="disp" style="font-size:24px;font-weight:800;color:${k === 1 && v ? "var(--bad)" : "var(--ink)"}">${v}</div><div class="m" style="font-size:12.5px">${l}</div></div>`).join("")}
+    </div>
+    ${charge.length ? `<h3 style="font-size:16px">Charge par semaine</h3>
+    <div style="display:flex;align-items:flex-end;gap:6px;height:110px;margin:8px 0 4px;border-bottom:1px solid var(--line)">${charge.map(k => `<div title="${semaines[k].length} intervention(s)" style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;height:100%"><span style="font-size:11px">${semaines[k].length}</span><div style="width:100%;max-width:38px;height:${Math.round(85 * semaines[k].length / maxSem)}%;background:var(--teal);border-radius:4px 4px 0 0"></div></div>`).join("")}</div>
+    <div style="display:flex;gap:6px">${charge.map(k => `<div style="flex:1;text-align:center;font-size:10.5px;color:var(--mute)">${fr(iso(k)).slice(0, 5)}</div>`).join("")}</div>` : ""}
+    ${parSite.length > 1 ? `<h3 style="font-size:16px;margin-top:18px">Par ${W().client}</h3><table><tr><th>${W().Clients.slice(0, -1)}</th><th>Interventions planifiées</th><th>Dont en retard</th></tr>${parSite.map(x => `<tr><td>${esc(x.c.nom)}</td><td>${x.n}</td><td style="color:${x.r ? "var(--bad)" : "inherit"}">${x.r}</td></tr>`).join("")}</table>` : ""}
+    ${retards.length ? `<h3 style="font-size:16px;margin-top:18px;color:var(--bad)">À rattraper immédiatement (${retards.length})</h3><table>${entete}${retards.map(ligne).join("")}</table>` : ""}
+    ${charge.map(k => `<h3 style="font-size:16px;margin-top:18px">Semaine du ${fr(iso(k))} <span class="m">· ${semaines[k].length} intervention(s)</span></h3><table>${entete}${semaines[k].map(ligne).join("")}</table>`).join("") || (retards.length ? "" : `<p class="empty">Aucun entretien prévu sur la période.</p>`)}
+    <p class="m" style="margin-top:18px">Dates calculées à partir du dernier entretien préventif et de la fréquence de chaque équipement. Généré par FroidPass.</p>
+  </div>`;
+  const h = document.getElementById("plH"), si = document.getElementById("plS"), cr = document.getElementById("plC");
+  h.value = String(PL.horizon); si.value = PL.site; cr.value = PL.crit;
+  h.onchange = () => { PL.horizon = Number(h.value); renderPlanning(); };
+  si.onchange = () => { PL.site = si.value; renderPlanning(); };
+  cr.onchange = () => { PL.crit = cr.value; renderPlanning(); };
+  document.getElementById("plCsv").onclick = () => {
+    const rows = [["date", "statut", "site", "zone", "equipement", "type", "criticite", "points_de_controle"], ...occ.map(o => [o.retard ? nextDue(o.e) : iso(o.d), o.retard ? "en retard" : "planifié", client(o.e.client_id).nom, o.e.zone || "", o.e.emplacement, TYPES[o.e.type]?.label || o.e.type, o.e.criticite || "normale", TYPES[o.e.type]?.pts || ""])];
+    const csv = "﻿" + rows.map(r => r.map(v => `"${String(v ?? "").replace(/"/g, '""')}"`).join(";")).join("\n");
+    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" })); a.download = `planning-preventif-${iso(TODAY)}.csv`; a.click();
+  };
 }

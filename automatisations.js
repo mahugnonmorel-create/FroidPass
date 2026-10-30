@@ -19,8 +19,8 @@
 // =====================================================================
 
 const DAY = 864e5;
-const FREQ = { split: [60, 90], cassette: [60, 90], groupe: [60, 90], chambre: [30, 30], vitrine: [60, 90] };
-const TYPE_LABEL = { split: "Split", cassette: "Cassette / gainable", groupe: "Groupe extérieur", chambre: "Chambre froide", vitrine: "Vitrine réfrigérée" };
+const FREQ = { split: [60, 90], cassette: [60, 90], groupe: [60, 90], chambre: [30, 30], vitrine: [60, 90], vrv: [60, 90], cta: [30, 30], eau_glacee: [30, 30], clim_precision: [30, 30], frigo_medical: [30, 30], chambre_mortuaire: [30, 30], ventilation: [90, 90] };
+const TYPE_LABEL = { split: "Split", cassette: "Cassette / gainable", groupe: "Groupe extérieur", chambre: "Chambre froide", vitrine: "Vitrine réfrigérée", vrv: "VRV / DRV", cta: "CTA", eau_glacee: "Groupe d'eau glacée", clim_precision: "Clim de précision", frigo_medical: "Réfrigérateur médical", chambre_mortuaire: "Chambre mortuaire", ventilation: "Ventilation" };
 const isoDay = t => new Date(t).toISOString().slice(0, 10);
 const fr = s => s ? String(s).slice(0, 10).split("-").reverse().join("/") : "—";
 const fcfa = n => Number(n || 0).toLocaleString("fr-FR").replace(/ | /g, " ") + " FCFA";
@@ -41,21 +41,23 @@ const rest = (env, q, ...a) => sb(env, "/rest/v1/" + q, ...a);
 async function loadData(env) {
   const [techs, eqs, ints, pays, users] = await Promise.all([
     rest(env, "techniciens?select=*"),
-    rest(env, "equipements?select=id,technicien_id,client_id,emplacement,type,environnement,date_pose,created_at"),
+    rest(env, "equipements?select=*"),
     rest(env, "interventions?select=equipement_id,date,type,created_at"),
     rest(env, "paiements?select=*"),
     sb(env, "/auth/v1/admin/users?per_page=1000")
   ]);
   const emails = {};
   for (const u of users.users || []) emails[u.id] = { email: u.email, created_at: u.created_at };
+  let sigs = [];
+  try { sigs = await rest(env, "signalements?select=statut,created_at"); } catch {}
   let clients = [];
   try { clients = await rest(env, "clients?select=id,nom"); } catch {}
-  return { techs, eqs, ints, pays, emails, clients };
+  return { techs, eqs, ints, pays, emails, clients, sigs };
 }
 
 function nextDue(e, ints) {
   const last = ints.filter(i => i.equipement_id === e.id && i.type === "preventif").sort((a, b) => b.date.localeCompare(a.date))[0];
-  const f = FREQ[e.type]?.[e.environnement === "cotier" ? 0 : 1] || 90;
+  const f = e.frequence_jours || FREQ[e.type]?.[e.environnement === "cotier" ? 0 : 1] || 90;
   return Date.parse(last ? last.date : e.date_pose) + f * DAY;
 }
 
@@ -108,7 +110,7 @@ export async function runAutomatisations(env, { dryRun = false } = {}) {
   const isMonday = _d.getUTCDay() === 1;
   const SITE = (env.SITE_URL || "").replace(/\/$/, "");
   const APP = SITE + "/app";
-  const { techs, eqs, ints, pays, emails } = await loadData(env);
+  const { techs, eqs, ints, pays, emails, sigs } = await loadData(env);
   const log = { emails: [], erreurs: [] };
 
   const actifs = techs.filter(t => t.offre !== "decouverte" && t.fin_abonnement && Date.parse(t.fin_abonnement) >= today);
@@ -185,6 +187,7 @@ export async function runAutomatisations(env, { dryRun = false } = {}) {
     `📅 Encaissé ce mois : <b>${fcfa(payesMois.reduce((s, p) => s + p.montant, 0))}</b>`,
     `⏳ Expirent sous 7 j : <b>${expirent.length}</b>${expirent.length ? " — " + expirent.map(t => esc(t.nom)).join(", ") : ""}`,
     `🧊 ${eqs.length} équipements · ${ints24} intervention(s) en 24 h · ${actifsSemaine} technicien(s) actifs cette semaine`,
+    `🚨 Signalements de panne ouverts : <b>${sigs.filter(x => x.statut !== "resolu").length}</b> (dont ${sigs.filter(x => Date.parse(x.created_at) > h24).length} en 24 h)`,
     `✉️ E-mails envoyés aujourd'hui : ${log.emails.length}${!env.BREVO_API_KEY ? " (e-mails non configurés)" : ""}`,
     log.erreurs.length ? `⚠️ Erreurs : ${log.erreurs.length}\n${log.erreurs.slice(0, 5).map(esc).join("\n")}` : null
   ].filter(l => l !== null).join("\n");
