@@ -22,3 +22,14 @@ create policy photos_select on storage.objects for select to authenticated
 drop policy if exists photos_delete on storage.objects;
 create policy photos_delete on storage.objects for delete to authenticated
   using (bucket_id = 'photos' and (storage.foldername(name))[1] = public.mon_org()::text and public.est_admin());
+
+-- Analyses IA des photos (comptage des quotas journaliers ; accès serveur uniquement)
+create table if not exists public.analyses_ia (
+  id             uuid primary key default gen_random_uuid(),
+  technicien_id  uuid not null references public.techniciens(id) on delete cascade,
+  intervention_id uuid references public.interventions(id) on delete set null,
+  demande_par    uuid,
+  created_at     timestamptz not null default now()
+);
+alter table public.analyses_ia enable row level security;
+create index if not exists analyses_ia_org_date on public.analyses_ia(technicien_id, created_at);

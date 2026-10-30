@@ -82,3 +82,10 @@ main{padding:24px 0 80px}
 .ph-in img{width:64px;height:48px;object-fit:cover;border-radius:6px;border:1px solid var(--line)}
 @media (max-width:600px){.ph-in{grid-template-columns:56px 1fr auto}.ph-in [data-leg]{grid-column:1/-1}}
 @media print{.ph-grid{grid-template-columns:repeat(4,1fr)}.ph-bloc{break-inside:avoid}}
+
+/* Analyse IA des photos */
+.ph-grid .ia-btn{margin-top:5px;width:100%;font-size:12px;padding:5px 8px}
+.ia-box{border:1px dashed var(--line);border-left:4px solid #e0a43a;border-radius:10px;padding:10px 12px;margin-top:10px;background:#fffaf0;break-inside:avoid}
+.ia-box.ok{border-left-color:#1f9d6b;background:#f3fbf7}
+.ia-h{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center;font-size:13.5px}
+.ia-t{white-space:pre-line;font-size:13px;line-height:1.5;margin-top:6px}

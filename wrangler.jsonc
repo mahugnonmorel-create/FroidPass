@@ -7,6 +7,8 @@
   "compatibility_date": "2026-10-01",
   // Automatisations : tous les jours à 6 h UTC = 7 h au Bénin
   "triggers": { "crons": ["0 6 * * *"] },
+  // IA (analyse des photos de pièces) : Cloudflare Workers AI, allocation gratuite quotidienne
+  "ai": { "binding": "AI" },
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",

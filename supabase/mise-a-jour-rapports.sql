@@ -65,7 +65,9 @@ begin
       order by e.zone, e.emplacement) from public.equipements e where e.client_id = c.id), '[]'::json),
     'interventions', coalesce((select json_agg(json_build_object(
         'date', i.date, 'type', i.type, 'equipement', e.emplacement, 'observations', i.observations,
-        'hp', i.hp, 'bp', i.bp, 'intensite', i.intensite, 't_soufflage', i.t_soufflage, 't_reprise', i.t_reprise, 'photos', i.photos) order by i.date)
+        'hp', i.hp, 'bp', i.bp, 'intensite', i.intensite, 't_soufflage', i.t_soufflage, 't_reprise', i.t_reprise,
+        -- photos : l'analyse IA n'est transmise au client que si le responsable l'a validée
+        'photos', (select coalesce(jsonb_agg(case when coalesce((p->'analyse'->>'valide')::boolean, false) then p else p - 'analyse' end), '[]'::jsonb) from jsonb_array_elements(coalesce(i.photos, '[]'::jsonb)) p)) order by i.date)
       from public.interventions i join public.equipements e on e.id = i.equipement_id
       where e.client_id = c.id and i.date >= d and i.date < f), '[]'::json),
     'signalements', (select count(*) from public.signalements s join public.equipements e on e.id = s.equipement_id where e.client_id = c.id and s.created_at >= d and s.created_at < f)

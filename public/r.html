@@ -8,7 +8,7 @@
 <link rel="icon" href="icon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,800&family=IBM+Plex+Mono:wght@400;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=7">
+<link rel="stylesheet" href="style.css?v=8">
 <script src="config.js?v=4"></script>
 </head>
 <body>
@@ -24,7 +24,8 @@ const TYPES = { split:["Split mural / console",60,90], cassette:["Cassette / gai
 const esc = s => String(s ?? "").replace(/[&<>"']/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));
 const PHOTO_CAT = { defectueuse: ["Pièce défectueuse", "p-bad"], remplacee: ["Pièce remplacée (neuve)", "p-ok"], avant: ["Avant intervention", "p-warn"], apres: ["Après intervention", "p-ok"], autre: ["Autre", ""] };
 const photoUrl = p => CFG.SUPABASE_URL + "/storage/v1/object/public/photos/" + String(p).split("/").map(encodeURIComponent).join("/");
-const photosHTML = l => `<div class="ph-grid">${l.map(ph => { const c = PHOTO_CAT[ph.categorie] || PHOTO_CAT.autre; return `<figure><a href="${photoUrl(ph.path)}" target="_blank" rel="noopener"><img loading="lazy" src="${photoUrl(ph.path)}" alt="${c[0]}"></a><figcaption><span class="pill ${c[1]}">${c[0]}</span>${ph.legende ? " " + esc(ph.legende) : ""}</figcaption></figure>`; }).join("")}</div>`;
+const photosHTML = l => `<div class="ph-grid">${l.map(ph => { const c = PHOTO_CAT[ph.categorie] || PHOTO_CAT.autre; return `<figure><a href="${photoUrl(ph.path)}" target="_blank" rel="noopener"><img loading="lazy" src="${photoUrl(ph.path)}" alt="${c[0]}"></a><figcaption><span class="pill ${c[1]}">${c[0]}</span>${ph.legende ? " " + esc(ph.legende) : ""}</figcaption></figure>`; }).join("")}</div>`
+  + l.map((ph, k) => ph.analyse && ph.analyse.valide ? `<div class="ia-box ok"><div class="ia-h"><b>Diagnostic de la pièce — photo ${k + 1}${ph.legende ? " (" + esc(ph.legende) + ")" : ""}</b><span class="m">validé par le responsable maintenance</span></div><div class="ia-t">${esc(ph.analyse.texte)}</div></div>` : "").join("");
 const fr = s => s ? String(s).slice(0,10).split("-").reverse().join("/") : "—";
 const el = document.getElementById("c");
 try {

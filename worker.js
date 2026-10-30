@@ -7,6 +7,7 @@ import { onRequest } from "./functions/api/[[route]].js";
 import { runAutomatisations } from "./automatisations.js";
 import { signaler } from "./signalements.js";
 import { envoyerRapport } from "./rapports.js";
+import { analyserPhoto } from "./ia.js";
 
 const json = (d, s = 200) => new Response(JSON.stringify(d, null, 2), { status: s, headers: { "Content-Type": "application/json; charset=utf-8" } });
 
@@ -19,6 +20,7 @@ export default {
       catch (e) { return json({ error: e.message }, 500); }
     }
     if (url.pathname === "/api/envoyer-rapport") return envoyerRapport(request, env).catch(e => json({ error: e.message }, 500));
+    if (url.pathname === "/api/analyser-photo") return analyserPhoto(request, env).catch(e => json({ error: e.message }, 500));
     if (url.pathname === "/api/signaler") return signaler(request, env).catch(e => json({ error: e.message }, 500));
     if (url.pathname.startsWith("/api/")) {
       const route = url.pathname.slice(5).split("/").filter(Boolean);

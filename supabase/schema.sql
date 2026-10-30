@@ -580,7 +580,9 @@ begin
       order by e.zone, e.emplacement) from public.equipements e where e.client_id = c.id), '[]'::json),
     'interventions', coalesce((select json_agg(json_build_object(
         'date', i.date, 'type', i.type, 'equipement', e.emplacement, 'observations', i.observations,
-        'hp', i.hp, 'bp', i.bp, 'intensite', i.intensite, 't_soufflage', i.t_soufflage, 't_reprise', i.t_reprise, 'photos', i.photos) order by i.date)
+        'hp', i.hp, 'bp', i.bp, 'intensite', i.intensite, 't_soufflage', i.t_soufflage, 't_reprise', i.t_reprise,
+        -- photos : l'analyse IA n'est transmise au client que si le responsable l'a validée
+        'photos', (select coalesce(jsonb_agg(case when coalesce((p->'analyse'->>'valide')::boolean, false) then p else p - 'analyse' end), '[]'::jsonb) from jsonb_array_elements(coalesce(i.photos, '[]'::jsonb)) p)) order by i.date)
       from public.interventions i join public.equipements e on e.id = i.equipement_id
       where e.client_id = c.id and i.date >= d and i.date < f), '[]'::json),
     'signalements', (select count(*) from public.signalements s join public.equipements e on e.id = s.equipement_id where e.client_id = c.id and s.created_at >= d and s.created_at < f)
@@ -613,3 +615,14 @@ create policy photos_select on storage.objects for select to authenticated
 drop policy if exists photos_delete on storage.objects;
 create policy photos_delete on storage.objects for delete to authenticated
   using (bucket_id = 'photos' and (storage.foldername(name))[1] = public.mon_org()::text and public.est_admin());
+
+-- Analyses IA des photos (comptage des quotas journaliers ; accès serveur uniquement)
+create table if not exists public.analyses_ia (
+  id             uuid primary key default gen_random_uuid(),
+  technicien_id  uuid not null references public.techniciens(id) on delete cascade,
+  intervention_id uuid references public.interventions(id) on delete set null,
+  demande_par    uuid,
+  created_at     timestamptz not null default now()
+);
+alter table public.analyses_ia enable row level security;
+create index if not exists analyses_ia_org_date on public.analyses_ia(technicien_id, created_at);

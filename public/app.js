@@ -128,10 +128,51 @@ async function loadAll() {
 const PHOTO_CAT = { defectueuse: ["Pièce défectueuse", "p-bad"], remplacee: ["Pièce remplacée (neuve)", "p-ok"], avant: ["Avant intervention", "p-warn"], apres: ["Après intervention", "p-ok"], autre: ["Autre", ""] };
 const MAX_PHOTOS = 6;
 const photoUrl = p => CFG.SUPABASE_URL + "/storage/v1/object/public/photos/" + p.split("/").map(encodeURIComponent).join("/");
-function photosHTML(list) {
+// mode "app" : boutons d'analyse IA (et validation pour le responsable) · mode "rapport" : seulement les analyses validées
+function photosHTML(list, it, mode = "app") {
   if (!Array.isArray(list) || !list.length) return "";
-  return `<div class="ph-grid">${list.map(ph => { const c = PHOTO_CAT[ph.categorie] || PHOTO_CAT.autre; return `<figure><a href="${photoUrl(ph.path)}" target="_blank" rel="noopener"><img loading="lazy" src="${photoUrl(ph.path)}" alt="${esc(c[0])}"></a><figcaption><span class="pill ${c[1]}">${c[0]}</span>${ph.legende ? " " + esc(ph.legende) : ""}</figcaption></figure>`; }).join("")}</div>`;
+  const fig = (ph, k) => { const c = PHOTO_CAT[ph.categorie] || PHOTO_CAT.autre; return `<figure><a href="${photoUrl(ph.path)}" target="_blank" rel="noopener"><img loading="lazy" src="${photoUrl(ph.path)}" alt="${esc(c[0])}"></a><figcaption><span class="pill ${c[1]}">${c[0]}</span>${ph.legende ? " " + esc(ph.legende) : ""}</figcaption>${it && mode === "app" && !ph.analyse ? `<button class="btn btn-ghost btn-sm noprint ia-btn" data-ia="${it.id}:${k}">🤖 Analyser avec l'IA</button>` : ""}</figure>`; };
+  const analyses = list.map((ph, k) => ({ ph, k })).filter(({ ph }) => ph.analyse && (mode === "app" || ph.analyse.valide));
+  return `<div class="ph-grid">${list.map(fig).join("")}</div>${analyses.map(({ ph, k }) => `<div class="ia-box ${ph.analyse.valide ? "ok" : ""}">
+    <div class="ia-h"><b>${ph.analyse.valide ? "Diagnostic de la pièce" : "🤖 Analyse IA"} — photo ${k + 1}${ph.legende ? " (" + esc(ph.legende) + ")" : ""}</b>
+    ${mode === "app" ? `<span class="pill ${ph.analyse.valide ? "p-ok" : "p-warn"}">${ph.analyse.valide ? "Validée · visible dans le rapport client" : "À valider par le responsable"}</span>` : `<span class="m">validé par le responsable maintenance</span>`}</div>
+    <div class="ia-t">${esc(ph.analyse.texte)}</div>
+    ${mode === "app" ? `<div class="noprint" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">${isAdmin() ? `${ph.analyse.valide ? `<button class="btn btn-ghost btn-sm" data-iaval="${it.id}:${k}:0">Retirer du rapport</button>` : `<button class="btn btn-teal btn-sm" data-iaval="${it.id}:${k}:1">✔ Valider pour le rapport</button>`}<button class="btn btn-ghost btn-sm" data-iaedit="${it.id}:${k}">Corriger</button>` : ""}<button class="btn btn-ghost btn-sm" data-ia="${it.id}:${k}">Relancer l'analyse</button></div>
+    <p class="m" style="font-size:11.5px;margin-top:6px">Aide au diagnostic générée par IA (${esc(ph.analyse.modele || "")}, ${fr(ph.analyse.date)}). À confirmer par une mesure réelle avant toute décision.</p>` : ""}</div>`).join("")}`;
 }
+// Actions IA (délégation : les boutons sont générés dans plusieurs écrans)
+async function majPhotosIntervention(id, fn) {
+  const it = S.ints.find(x => x.id === id); if (!it) return;
+  const photos = JSON.parse(JSON.stringify(it.photos || [])); fn(photos);
+  const { error } = await sb.from("interventions").update({ photos }).eq("id", id);
+  if (error) throw error;
+  await loadAll(); route();
+}
+document.addEventListener("click", async ev => {
+  const b = ev.target.closest("[data-ia],[data-iaval],[data-iaedit]"); if (!b) return;
+  if (b.dataset.ia) {
+    const [id, k] = b.dataset.ia.split(":"); b.disabled = true; const lib = b.textContent; b.textContent = "Analyse en cours… (10-30 s)";
+    try {
+      const { data: { session } } = await sb.auth.getSession();
+      const r = await fetch("/api/analyser-photo", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + session.access_token }, body: JSON.stringify({ intervention_id: id, index: Number(k) }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || "Analyse impossible");
+      await loadAll(); route(); toast(`Analyse terminée${j.restant != null ? ` · ${j.restant} analyse(s) restante(s) aujourd'hui` : ""}${isAdmin() ? "" : " · le responsable doit la valider"}`);
+    } catch (e) { toast(e.message); b.disabled = false; b.textContent = lib; }
+  } else if (b.dataset.iaval) {
+    const [id, k, v] = b.dataset.iaval.split(":");
+    try { await majPhotosIntervention(id, ph => { ph[k].analyse.valide = v === "1"; ph[k].analyse.valide_par = (S.me || S.tech).nom; }); toast(v === "1" ? "Diagnostic validé · il apparaîtra dans le rapport client" : "Diagnostic retiré du rapport client"); } catch (e) { toast(e.message); }
+  } else if (b.dataset.iaedit) {
+    const [id, k] = b.dataset.iaedit.split(":"), ph = (S.ints.find(x => x.id === id)?.photos || [])[k]; if (!ph?.analyse) return;
+    modal(`<div class="panel"><h3>Corriger le diagnostic</h3><p class="m">Corrigez ou complétez l'analyse (mesures réelles, référence exacte…) puis validez-la pour le rapport client.</p>
+      <textarea class="field" id="iaTxt" rows="14" style="margin-top:8px">${esc(ph.analyse.texte)}</textarea>
+      <div style="display:flex;gap:8px;margin-top:10px"><button class="btn btn-hot" id="iaOk">Enregistrer et valider</button><button class="btn btn-ghost" data-close>Annuler</button></div></div>`);
+    document.getElementById("iaOk").onclick = async () => {
+      const t = document.getElementById("iaTxt").value.trim().slice(0, 4000); if (!t) return;
+      try { modal(""); await majPhotosIntervention(id, p => { Object.assign(p[k].analyse, { texte: t, valide: true, corrige: true, valide_par: (S.me || S.tech).nom }); }); toast("Diagnostic corrigé et validé"); } catch (e) { toast(e.message); }
+    };
+  }
+});
 const photosChampHTML = () => `<div class="full ph-champ"><b style="font-size:14px">📷 Photos des pièces</b> <span class="m">(pièce défectueuse, pièce remplacée, avant / après · ${MAX_PHOTOS} max · compressées automatiquement)</span>
   <div class="ph-list"></div><label class="btn btn-ghost btn-sm" style="cursor:pointer;margin-top:6px">+ Ajouter des photos<input type="file" accept="image/*" multiple hidden></label></div>`;
 // Branche le champ photos d'un formulaire ; renvoie une fonction qui téléverse et donne la liste à enregistrer
@@ -180,7 +221,7 @@ async function supprimerPhotos(list) { if (Array.isArray(list) && list.length) a
 function sectionPhotos(ints, nomEq, titre) {
   const l = ints.filter(i => Array.isArray(i.photos) && i.photos.length);
   if (!l.length) return "";
-  return `<h3 style="font-size:17px;margin-top:22px">${titre}</h3>${l.map(i => `<div class="ph-bloc"><div style="font-size:13.5px;font-weight:600;margin-top:8px">${fr(i.date)} · ${esc(nomEq(i))} · ${i.type === "preventif" ? "Préventif" : "Curatif"}</div>${photosHTML(i.photos)}</div>`).join("")}`;
+  return `<h3 style="font-size:17px;margin-top:22px">${titre}</h3>${l.map(i => `<div class="ph-bloc"><div style="font-size:13.5px;font-weight:600;margin-top:8px">${fr(i.date)} · ${esc(nomEq(i))} · ${i.type === "preventif" ? "Préventif" : "Curatif"}</div>${photosHTML(i.photos, i, "rapport")}</div>`).join("")}`;
 }
 
 // ---------- Routage ----------
@@ -372,7 +413,7 @@ function renderEq(id) {
       <div class="panel"><h3>Historique</h3><div class="hist">${list.length ? list.map(x => `
         <div class="it"><b class="mono" style="font-size:13.5px">${fr(x.date)}</b> · <b>${x.type === "preventif" ? "Préventif" : "Curatif"}</b>
           <button class="btn btn-sm noprint" style="padding:0 6px;color:var(--mute);background:none" data-delint="${x.id}" title="Supprimer" ${isAdmin() ? "" : "hidden"}>✕</button>
-          <div class="m">${esc(x.observations)}</div>${measHTML(x)}${photosHTML(x.photos)}${flags(x).map(f => `<div class="flag">⚠ ${f}</div>`).join("")}</div>`).join("")
+          <div class="m">${esc(x.observations)}</div>${measHTML(x)}${photosHTML(x.photos, x)}${flags(x).map(f => `<div class="flag">⚠ ${f}</div>`).join("")}</div>`).join("")
         : `<p class="empty">Aucune intervention.</p>`}</div></div>
     </div>
   </div>`;
@@ -1039,7 +1080,7 @@ function renderOTDetail(id) {
       </tbody></table>
       ${o.description ? `<p style="margin-top:12px"><b>Description</b><br>${esc(o.description)}</p>` : ""}
       ${o.compte_rendu ? `<p style="margin-top:12px"><b>Compte rendu</b><br>${esc(o.compte_rendu)}</p>` : ""}
-      ${photosHTML((S.ints.find(i => i.id === o.intervention_id) || {}).photos)}
+      ${(() => { const it = S.ints.find(i => i.id === o.intervention_id); return it ? photosHTML(it.photos, it) : ""; })()}
     </div>
     <div id="otAction"></div>
   </div><div>
@@ -1152,7 +1193,7 @@ function renderBon(id) {
   ${e ? `<p class="m" style="margin-top:6px">Points de contrôle : ${TYPES[e.type]?.pts || ""}</p>` : ""}
   <h3 style="font-size:16px;margin-top:18px">Sécurité</h3><p style="font-size:13.5px">☐ Consignation électrique réalisée (NF C 18-510) &nbsp; ☐ EPI portés &nbsp; ☐ Zone balisée &nbsp; ☐ Fluides : récupération conforme</p>
   <h3 style="font-size:16px;margin-top:18px">Compte rendu</h3><p style="border:1px solid var(--line);padding:10px;min-height:90px">${esc(o.compte_rendu || "")}</p>
-  ${(() => { const ph = (S.ints.find(i => i.id === o.intervention_id) || {}).photos; return ph && ph.length ? `<h3 style="font-size:16px;margin-top:18px">Photos des pièces</h3>${photosHTML(ph)}` : ""; })()}
+  ${(() => { const it = S.ints.find(i => i.id === o.intervention_id); return it?.photos?.length ? `<h3 style="font-size:16px;margin-top:18px">Photos des pièces</h3>${photosHTML(it.photos, it, "rapport")}` : ""; })()}
   <h3 style="font-size:16px;margin-top:18px">Pièces utilisées</h3><table><tr><th>Désignation</th><th>Quantité</th><th>Prix unitaire</th><th>Montant</th></tr>
   ${conso.map(x => { const p = S.pieces.find(pp => pp.id === x.piece_id) || {}; return `<tr><td>${esc(p.designation || "")}</td><td>${x.quantite} ${p.unite || ""}</td><td>${fcfa2(x.prix_unitaire)}</td><td>${fcfa2(x.quantite * x.prix_unitaire)}</td></tr>`; }).join("") || `<tr><td colspan="4" style="height:60px"></td></tr>`}</table>
   <p style="margin-top:10px;font-size:14px">Durée : ${o.duree_heures ?? "……"} h · Main d'œuvre : ${fcfa2(o.cout_main_oeuvre)} · Pièces : ${fcfa2(coutPieces(o))} · <b>Total : ${fcfa2((o.cout_main_oeuvre || 0) + coutPieces(o))}</b></p>
