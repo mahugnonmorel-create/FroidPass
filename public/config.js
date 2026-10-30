@@ -5,7 +5,7 @@
 // "service_role" ni la clé secrète FedaPay.
 // ============================================================
 window.FROIDPASS_CONFIG = {
-  SUPABASE_URL: "https://VOTRE-PROJET.supabase.co",
-  SUPABASE_ANON_KEY: "VOTRE_CLE_ANON_PUBLIQUE",
+  SUPABASE_URL: "https://reuyjmnvgobwdxhweclp.supabase.co",
+  SUPABASE_ANON_KEY: "sb_publishable_OmVnvJrNYlokndACiUz3mA_bifUHPb7",
   WHATSAPP_FROIDPASS: "2290162777977"
 };
