@@ -247,6 +247,7 @@ async function route() {
   if (h === "rapport-global") return renderRapportGlobal();
   if (h === "planning") return renderPlanning();
   if (h.startsWith("ot-bon-")) return renderBon(h.slice(7));
+  if (h === "affectation") return isAdmin() ? renderAffectation() : (location.hash = "ot");
   if (h.startsWith("ot-")) return renderOTDetail(h.slice(3));
   if (h === "ot") return renderOT();
   if (h === "stock") return renderStock();
@@ -998,7 +999,7 @@ function renderPlanning() {
 // GMAO — ORDRES DE TRAVAIL (OT)
 // Circuit : Demande → Planifié → En cours → Terminé (ou Annulé)
 // =====================================================================
-const OT_TYPES = { preventif: "Préventif", curatif: "Curatif (panne)", inspection: "Inspection", amelioration: "Amélioration" };
+const OT_TYPES = { preventif: "Préventif", curatif: "Curatif (panne)", inspection: "Inspection", amelioration: "Amélioration", tache: "Tâche (hors équipement)" };
 const PRIO = { basse: { l: "Basse", c: "" }, normale: { l: "Normale", c: "p-ok" }, haute: { l: "Haute", c: "p-warn" }, urgente: { l: "Urgente", c: "p-bad" } };
 const STATUTS = { demande: "Demande", planifie: "Planifié", en_cours: "En cours", termine: "Terminé", annule: "Annulé" };
 const otNum = o => "OT-" + String(o.numero || 0).padStart(4, "0");
@@ -1016,7 +1017,7 @@ function carteOT(o) {
     <div style="display:flex;justify-content:space-between;gap:6px"><span class="mono m">${otNum(o)}</span><span class="pill ${PRIO[o.priorite].c}">${PRIO[o.priorite].l}</span></div>
     <div class="t" style="margin:4px 0 2px">${esc(o.titre)}</div>
     <div class="m">${esc(client(o.client_id).nom || "")}${e ? " · " + esc(e.emplacement) : ""}</div>
-    <div class="m" style="margin-top:4px">${OT_TYPES[o.type]}${o.date_prevue ? ` · <span style="color:${otEnRetard(o) ? "var(--bad)" : "inherit"}">${fr(o.date_prevue)}</span>` : ""}${o.assigne_a ? " · 👤 " + esc(nomMembre(o.assigne_a) || o.intervenant) : o.intervenant ? " · " + esc(o.intervenant) : ""}</div></a>`;
+    <div class="m" style="margin-top:4px">${OT_TYPES[o.type]}${o.date_prevue ? ` · <span style="color:${otEnRetard(o) ? "var(--bad)" : "inherit"}">${fr(o.date_prevue)}</span>` : ""}${o.assigne_a ? " · 👤 " + esc(nomMembre(o.assigne_a) || o.intervenant) : o.intervenant ? " · " + esc(o.intervenant) : ""}${o.assigne_a && ["planifie", "en_cours"].includes(o.statut) ? (o.assigne_a === S.user.id && !o.vu_le && !isAdmin() ? ' <span class="pill p-bad">Nouveau</span>' : isAdmin() && o.assigne_a !== S.user.id ? (o.vu_le ? ' <span title="Vu par le technicien">👁</span>' : ' <span class="m" title="Pas encore consulté par le technicien">· non lu</span>') : "") : ""}</div></a>`;
 }
 
 let OTF = { q: "", site: "" };
@@ -1032,7 +1033,7 @@ function renderOT() {
   const retard = S.ots.filter(otEnRetard).length;
   $view.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:end;gap:10px;flex-wrap:wrap;margin-bottom:12px">
       <div><h1 style="font-size:28px">${isAdmin() ? "Travaux (ordres de travail)" : "Mes travaux"}</h1><p class="m">Chaque intervention suit 4 étapes : demande, planification, réalisation, clôture.${retard ? ` <b style="color:var(--bad)">${retard} OT en retard.</b>` : ""}</p></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">${isAdmin() ? `<button class="btn btn-ghost btn-sm" id="genOT">Générer les OT préventifs (30 j)</button>` : ""}<button class="btn btn-hot btn-sm" id="newOT">${isAdmin() ? "+ Nouvel OT" : "+ Signaler un besoin"}</button></div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">${isAdmin() ? `<a class="btn btn-teal btn-sm" href="#affectation">👥 Affecter des tâches</a><button class="btn btn-ghost btn-sm" id="genOT">Générer les OT préventifs (30 j)</button>` : ""}<button class="btn btn-hot btn-sm" id="newOT">${isAdmin() ? "+ Nouvel OT" : "+ Signaler un besoin"}</button></div></div>
     <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap"><input class="field" id="otq" placeholder="Rechercher (titre, n°, équipement, intervenant)" style="max-width:340px" value="${esc(OTF.q)}">
       <select class="field" id="ots" style="width:auto"><option value="">Tous les ${W().clients}</option>${S.clients.map(c => `<option value="${c.id}" ${OTF.site === c.id ? "selected" : ""}>${esc(c.nom)}</option>`).join("")}</select></div>
     <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px" class="kanban">
@@ -1051,7 +1052,7 @@ function openOTForm(pre) {
   const cid = pre.client_id || (pre.equipement_id ? eqById(pre.equipement_id)?.client_id : "") || S.clients[0].id;
   const eqOpts = c => `<option value="">— Aucun équipement précis —</option>` + S.eqs.filter(e => e.client_id === c).map(e => `<option value="${e.id}" ${pre.equipement_id === e.id ? "selected" : ""}>${esc(e.emplacement)}${e.zone ? " · " + esc(e.zone) : ""}</option>`).join("");
   modal(`<div class="panel"><h3>Nouvel ordre de travail</h3><form class="form" id="otForm">
-    <label>${W().Clients.slice(0, -1)}<select class="field" name="client_id" id="otCli">${S.clients.map(c => `<option value="${c.id}" ${c.id === cid ? "selected" : ""}>${esc(c.nom)}</option>`).join("")}</select></label>
+    <label>${W().Clients.slice(0, -1)}<select class="field" name="client_id" id="otCli">${isAdmin() ? `<option value="">— Aucun (tâche générale) —</option>` : ""}${S.clients.map(c => `<option value="${c.id}" ${c.id === cid ? "selected" : ""}>${esc(c.nom)}</option>`).join("")}</select></label>
     <label>Équipement<select class="field" name="equipement_id" id="otEq">${eqOpts(cid)}</select></label>
     <label class="full">Titre<input class="field" name="titre" required maxlength="200" value="${esc(pre.titre || "")}" placeholder="Ex. Ne refroidit plus, entretien trimestriel…"></label>
     <label>Type<select class="field" name="type">${Object.entries(OT_TYPES).map(([k, v]) => `<option value="${k}" ${(pre.type || "curatif") === k ? "selected" : ""}>${v}</option>`).join("")}</select></label>
@@ -1067,15 +1068,18 @@ function openOTForm(pre) {
   document.getElementById("otForm").onsubmit = async ev => {
     ev.preventDefault(); const b = ev.target.querySelector("button[type=submit]"); b.disabled = true;
     const o = Object.fromEntries(new FormData(ev.target));
-    for (const k of ["equipement_id", "date_prevue", "assigne_a"]) if (!o[k]) o[k] = null;
+    for (const k of ["client_id", "equipement_id", "date_prevue", "assigne_a"]) if (!o[k]) o[k] = null;
+    if (!o.client_id && !isAdmin()) { toast(`Choisissez un ${W().client}`); b.disabled = false; return; }
+    if (o.assigne_a) o.assigne_le = new Date().toISOString();
     if (o.assigne_a && !o.intervenant) { o.intervenant = nomMembre(o.assigne_a); o.intervenant_tel = o.intervenant_tel || (S.membres.find(m => m.user_id === o.assigne_a)?.telephone || ""); }
-    o.statut = isAdmin() && o.date_prevue ? "planifie" : "demande";
+    o.statut = isAdmin() && (o.date_prevue || o.assigne_a) ? "planifie" : "demande";
     if (!isAdmin()) delete o.assigne_a;
     if (pre.signalement_id) o.signalement_id = pre.signalement_id;
     const { data, error } = await sb.from("ordres_travail").insert(o).select().single();
     if (error) { toast(error.message); b.disabled = false; return; }
     if (pre.signalement_id) await sb.from("signalements").update({ statut: "en_cours" }).eq("id", pre.signalement_id);
     modal(""); await loadAll(); location.hash = "ot-" + data.id; toast(`${otNum(data)} créé`);
+    if (data.assigne_a && data.assigne_a !== S.user.id) notifierAffectation([data.id]);
   };
 }
 
@@ -1103,7 +1107,7 @@ function renderOTDetail(id) {
         <tr><td class="m">Équipement</td><td>${e ? `<a href="#eq-${e.id}">${esc(e.emplacement)}</a> · ${TYPES[e.type]?.label || ""}${e.criticite === "critique" ? ' <span class="pill p-bad">Critique</span>' : ""}` : "—"}</td></tr>
         <tr><td class="m">Type</td><td>${OT_TYPES[o.type]}</td></tr>
         <tr><td class="m">Date prévue</td><td>${fr(o.date_prevue)}</td></tr>
-        <tr><td class="m">Assigné à</td><td>${o.assigne_a ? "👤 " + esc(nomMembre(o.assigne_a)) : "—"}${o.intervenant && o.intervenant !== nomMembre(o.assigne_a) ? " · " + esc(o.intervenant) : ""} ${esc(o.intervenant_tel || "")}</td></tr>
+        <tr><td class="m">Assigné à</td><td>${o.assigne_a ? "👤 " + esc(nomMembre(o.assigne_a)) + (o.assigne_a !== S.user.id || isAdmin() ? `<br><span class="m">${o.assigne_le ? "Affecté le " + fr(o.assigne_le) + " · " : ""}${o.vu_le ? "👁 vu par le technicien le " + fr(o.vu_le) + " à " + new Date(o.vu_le).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) : "pas encore consulté par le technicien"}</span>` : "") + (isAdmin() && o.assigne_a !== S.user.id && ["planifie", "en_cours"].includes(o.statut) ? ` <button class="btn btn-ghost btn-sm" id="aRelance">Renvoyer la notification</button>` : "") : "—"}${o.intervenant && o.intervenant !== nomMembre(o.assigne_a) ? " · " + esc(o.intervenant) : ""} ${esc(o.intervenant_tel || "")}</td></tr>
         <tr><td class="m">Créé le</td><td>${fr(o.created_at)}${o.date_debut ? " · démarré le " + fr(o.date_debut) : ""}${o.date_fin ? " · terminé le " + fr(o.date_fin) : ""}</td></tr>
       </tbody></table>
       ${o.description ? `<p style="margin-top:12px"><b>Description</b><br>${esc(o.description)}</p>` : ""}
@@ -1129,6 +1133,9 @@ function renderOTDetail(id) {
     </div>
   </div></div>`;
   const q = sel => document.getElementById(sel);
+  // Accusé de lecture : le technicien assigné ouvre sa tâche
+  if (o.assigne_a === S.user.id && !o.vu_le && !(isAdmin() && !S.moi)) { o.vu_le = new Date().toISOString(); sb.from("ordres_travail").update({ vu_le: o.vu_le }).eq("id", o.id).then(() => {}); }
+  if (q("aRelance")) q("aRelance").onclick = () => notifierAffectation([o.id]);
   if (q("aPlan")) q("aPlan").onclick = () => {
     q("otAction").innerHTML = `<div class="panel"><h3>Planifier</h3><form class="form" id="fPlan">
       <label>Date prévue<input class="field" type="date" name="date_prevue" required value="${o.date_prevue || iso(TODAY)}"></label>
@@ -1139,7 +1146,9 @@ function renderOTDetail(id) {
       <div class="full"><button class="btn btn-teal" type="submit">Enregistrer</button></div></form></div>`;
     q("fPlan").onsubmit = ev => { ev.preventDefault(); const f = Object.fromEntries(new FormData(ev.target)); f.assigne_a = f.assigne_a || null;
       if (f.assigne_a) { f.intervenant = f.intervenant || nomMembre(f.assigne_a); f.intervenant_tel = f.intervenant_tel || (S.membres.find(m => m.user_id === f.assigne_a)?.telephone || ""); }
-      majOT(o.id, { ...f, statut: "planifie" }, "OT planifié"); };
+      const change = f.assigne_a && f.assigne_a !== o.assigne_a;
+      if (change) { f.assigne_le = new Date().toISOString(); f.vu_le = null; }
+      majOT(o.id, { ...f, statut: "planifie" }, "OT planifié").then(ok => { if (ok && change && f.assigne_a !== S.user.id) notifierAffectation([o.id]); }); };
   };
   if (q("aStart")) q("aStart").onclick = () => majOT(o.id, { statut: "en_cours", date_debut: new Date().toISOString() }, "Intervention démarrée");
   if (q("aCancel")) q("aCancel").onclick = () => confirmBox(`Annuler ${otNum(o)} ?`, () => majOT(o.id, { statut: "annule" }, "OT annulé"));
@@ -1360,6 +1369,97 @@ function renderAide() {
 
 
 // =====================================================================
+// AFFECTATION DES TÂCHES (responsable / directeur)
+// =====================================================================
+const assignables = () => [...(!S.moi ? [{ user_id: S.user.id, nom: (S.tech.nom || "Moi") + " (moi)", role: "admin", telephone: S.tech.whatsapp }] : []), ...(S.membres || [])];
+const telMembre = uid => (S.membres || []).find(m => m.user_id === uid)?.telephone || "";
+// Prévient le(s) technicien(s) : e-mail + WhatsApp automatiques si configurés, sinon WhatsApp en un clic
+async function notifierAffectation(ids) {
+  const ots = ids.map(id => S.ots.find(o => o.id === id)).filter(o => o && o.assigne_a && o.assigne_a !== S.user.id);
+  if (!ots.length) return;
+  let res = {};
+  try {
+    const { data: { session } } = await sb.auth.getSession();
+    const r = await fetch("/api/notifier-taches", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + session.access_token }, body: JSON.stringify({ ot_ids: ots.map(o => o.id) }) });
+    res = await r.json().catch(() => ({}));
+  } catch { res = {}; }
+  const parTech = {}; ots.forEach(o => (parTech[o.assigne_a] ||= []).push(o));
+  const lignes = Object.entries(parTech).map(([uid, l]) => {
+    const tel = waNum(telMembre(uid)), nom = nomMembre(uid) || "Technicien";
+    const txt = `Bonjour ${nom.split(" ")[0]},\n\n${(S.me || S.tech).nom} vous a assigné ${l.length > 1 ? l.length + " tâches" : "une tâche"} :\n${l.map(o => `• ${otNum(o)} — ${o.titre}${client(o.client_id).nom ? " (" + client(o.client_id).nom + ")" : ""}${o.date_prevue ? " — pour le " + fr(o.date_prevue) : ""}${o.priorite === "urgente" ? " — URGENT" : ""}`).join("\n")}\n\nDétails et compte rendu dans votre espace : ${location.origin}/app#tableau`;
+    return `<div class="row" style="cursor:default;grid-template-columns:1fr auto"><div><div class="t">👤 ${esc(nom)} · ${l.length} tâche(s)</div><div class="m">${tel ? esc(telMembre(uid)) : "numéro WhatsApp non renseigné (page Équipe)"}</div></div>${tel ? `<a class="btn btn-teal btn-sm" target="_blank" rel="noopener" href="https://wa.me/${tel}?text=${encodeURIComponent(txt)}">${res.whatsapp_auto ? "Renvoyer sur WhatsApp" : "Envoyer sur WhatsApp"}</a>` : ""}</div>`;
+  }).join("");
+  const etat = [res.email_auto ? `✉️ E-mail envoyé automatiquement (${res.email || 0})` : "✉️ E-mail automatique non configuré", res.whatsapp_auto ? `💬 WhatsApp envoyé automatiquement (${res.whatsapp || 0})` : "💬 WhatsApp automatique non configuré : envoyez en un clic ci-dessous"].join("<br>");
+  modal(`<div class="panel"><h3>Prévenir ${Object.keys(parTech).length > 1 ? "les techniciens" : "le technicien"}</h3><p class="m" style="margin-bottom:10px">${etat}${(res.echecs || []).length ? `<br><span style="color:var(--bad)">${res.echecs.map(esc).join("<br>")}</span>` : ""}</p>${lignes}
+    <div style="margin-top:12px"><button class="btn btn-ghost" data-close>Fermer</button></div></div>`);
+}
+
+function renderAffectation() {
+  if (!S.gmao) return besoinMaj("Travaux");
+  const gens = assignables(), debutMois = Date.UTC(new Date(TODAY).getUTCFullYear(), new Date(TODAY).getUTCMonth(), 1);
+  const charge = gens.map(g => { const l = S.ots.filter(o => o.assigne_a === g.user_id); const af = l.filter(o => ["planifie", "en_cours"].includes(o.statut));
+    return { g, af: af.length, ret: af.filter(otEnRetard).length, enc: af.filter(o => o.statut === "en_cours").length, nl: af.filter(o => !o.vu_le && g.user_id !== S.user.id).length, fin: l.filter(o => o.statut === "termine" && Date.parse(o.date_fin) >= debutMois).length }; });
+  const ouverts = S.ots.filter(o => ["demande", "planifie"].includes(o.statut)).sort((a, b) => (!!a.assigne_a - !!b.assigne_a) || (["urgente", "haute", "normale", "basse"].indexOf(a.priorite) - ["urgente", "haute", "normale", "basse"].indexOf(b.priorite)) || String(a.date_prevue || "9").localeCompare(String(b.date_prevue || "9")));
+  const optsG = sel => `<option value="">— Non assigné —</option>` + gens.map(g => `<option value="${g.user_id}" ${sel === g.user_id ? "selected" : ""}>${esc(g.nom || "Membre")}</option>`).join("");
+  $view.innerHTML = `<a href="#ot" class="m">← Travaux</a>
+  <h1 style="font-size:28px;margin:6px 0 4px">Affecter des tâches</h1>
+  <p class="m" style="margin-bottom:14px">Créez une tâche pour un technicien ou répartissez les OT en attente. Chaque technicien est prévenu (e-mail / WhatsApp) et vous voyez quand il a consulté sa tâche.</p>
+  ${!(S.membres || []).some(m => m.role === "technicien") ? `<div class="panel" style="border-color:var(--heat)">Aucun technicien dans l'équipe pour l'instant. <a href="#equipe">Inviter un technicien</a></div>` : ""}
+  <div class="grid2"><div class="panel"><h3>Nouvelle tâche</h3><form class="form" id="fTache">
+      <label class="full">Tâche à réaliser<input class="field" name="titre" required maxlength="200" placeholder="Ex. Nettoyer les filtres du bloc B, inventaire du stock, relever les compteurs…"></label>
+      <label>Assigner à<select class="field" name="assigne_a" required>${optsG("").replace("— Non assigné —", "— Choisir —")}</select></label>
+      <label>Échéance<input class="field" type="date" name="date_prevue" value="${iso(TODAY + DAY)}" required></label>
+      <label>Type<select class="field" name="type">${Object.entries(OT_TYPES).map(([k, v]) => `<option value="${k}" ${k === "tache" ? "selected" : ""}>${v}</option>`).join("")}</select></label>
+      <label>Priorité<select class="field" name="priorite">${Object.entries(PRIO).map(([k, v]) => `<option value="${k}" ${k === "normale" ? "selected" : ""}>${v.l}</option>`).join("")}</select></label>
+      <label>${W().Clients.slice(0, -1)} (facultatif)<select class="field" name="client_id" id="tCli"><option value="">— Aucun (tâche générale) —</option>${S.clients.map(c => `<option value="${c.id}">${esc(c.nom)}</option>`).join("")}</select></label>
+      <label>Équipement (facultatif)<select class="field" name="equipement_id" id="tEq"><option value="">—</option></select></label>
+      <label class="full">Consignes<textarea class="field" name="description" rows="2" placeholder="Détails, matériel à prévoir, contact sur place…"></textarea></label>
+      <div class="full"><button class="btn btn-hot" type="submit">Assigner et prévenir</button></div></form></div>
+    <div class="panel"><h3>Charge de l'équipe</h3><table class="tbl"><tbody><tr><th>Membre</th><th>À faire</th><th>En retard</th><th>En cours</th><th>Non lues</th><th>Terminées (mois)</th></tr>
+      ${charge.map(x => `<tr><td>${esc(x.g.nom || "Membre")}</td><td><b>${x.af}</b></td><td style="color:${x.ret ? "var(--bad)" : "inherit"}">${x.ret}</td><td>${x.enc}</td><td style="color:${x.nl ? "var(--heat)" : "inherit"}">${x.nl}</td><td>${x.fin}</td></tr>`).join("")}</tbody></table>
+      <p class="m" style="margin-top:8px">« Non lues » : tâches que le technicien n'a pas encore ouvertes.</p></div></div>
+  <div class="panel"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center"><h3>Répartir les OT en attente (${ouverts.length})</h3>
+    <label class="m" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="nonAss"> seulement les non assignés</label></div>
+    ${ouverts.length ? `<div style="overflow-x:auto"><table class="tbl" id="tRep"><tbody><tr><th>N°</th><th>Tâche</th><th>${W().Clients.slice(0, -1)} / équipement</th><th>Priorité</th><th>Échéance</th><th>Assigné à</th></tr>
+      ${ouverts.map(o => `<tr data-id="${o.id}" data-ass="${o.assigne_a ? 1 : 0}"><td class="mono"><a href="#ot-${o.id}">${otNum(o)}</a></td><td>${esc(o.titre)}<br><span class="m">${OT_TYPES[o.type]}${o.vu_le ? " · 👁 vu" : ""}</span></td><td>${esc(client(o.client_id).nom || "Général")}${eqById(o.equipement_id) ? "<br><span class='m'>" + esc(eqById(o.equipement_id).emplacement) + "</span>" : ""}</td><td><span class="pill ${PRIO[o.priorite].c}">${PRIO[o.priorite].l}</span></td>
+        <td><input class="field" type="date" data-d value="${o.date_prevue || ""}" style="padding:6px 8px"></td><td><select class="field" data-a style="padding:6px 8px">${optsG(o.assigne_a)}</select></td></tr>`).join("")}</tbody></table></div>
+      <div style="display:flex;gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap"><button class="btn btn-hot" id="saveRep">Enregistrer les affectations et prévenir</button><span class="m" id="nbChg"></span></div>` : `<p class="m">Aucun OT en attente. ✅</p>`}</div>`;
+  const tCli = document.getElementById("tCli"), tEq = document.getElementById("tEq");
+  tCli.onchange = () => { tEq.innerHTML = `<option value="">—</option>` + S.eqs.filter(e => e.client_id === tCli.value).map(e => `<option value="${e.id}">${esc(e.emplacement)}${e.zone ? " · " + esc(e.zone) : ""}</option>`).join(""); };
+  document.getElementById("fTache").onsubmit = async ev => {
+    ev.preventDefault(); const b = ev.target.querySelector("button"); b.disabled = true;
+    const o = Object.fromEntries(new FormData(ev.target));
+    for (const k of ["client_id", "equipement_id"]) if (!o[k]) o[k] = null;
+    Object.assign(o, { statut: "planifie", assigne_le: new Date().toISOString(), intervenant: nomMembre(o.assigne_a) || "", intervenant_tel: telMembre(o.assigne_a) });
+    const { data, error } = await sb.from("ordres_travail").insert(o).select().single();
+    if (error) { toast(error.message); b.disabled = false; return; }
+    await loadAll(); renderAffectation(); toast(`${otNum(data)} assigné à ${nomMembre(o.assigne_a)}`);
+    if (o.assigne_a !== S.user.id) notifierAffectation([data.id]);
+  };
+  const tab = document.getElementById("tRep");
+  if (tab) {
+    const lignes = () => [...tab.querySelectorAll("tr[data-id]")];
+    const chg = () => lignes().filter(tr => { const o = S.ots.find(x => x.id === tr.dataset.id); return (tr.querySelector("[data-a]").value || null) !== (o.assigne_a || null) || (tr.querySelector("[data-d]").value || null) !== (o.date_prevue || null); });
+    tab.oninput = tab.onchange = () => { const n = chg().length; document.getElementById("nbChg").textContent = n ? `${n} modification(s) à enregistrer` : ""; };
+    document.getElementById("nonAss").onchange = ev => lignes().forEach(tr => tr.hidden = ev.target.checked && tr.dataset.ass === "1");
+    document.getElementById("saveRep").onclick = async ev => {
+      const l = chg(); if (!l.length) return toast("Aucune modification");
+      ev.target.disabled = true; const aPrevenir = [];
+      for (const tr of l) {
+        const o = S.ots.find(x => x.id === tr.dataset.id), a = tr.querySelector("[data-a]").value || null, d = tr.querySelector("[data-d]").value || null;
+        const patch = { assigne_a: a, date_prevue: d, statut: a || d ? "planifie" : "demande" };
+        if (a !== (o.assigne_a || null)) { Object.assign(patch, { assigne_le: a ? new Date().toISOString() : null, vu_le: null, intervenant: a ? nomMembre(a) : "", intervenant_tel: a ? telMembre(a) : "" }); if (a && a !== S.user.id) aPrevenir.push(o.id); }
+        else if (a && d !== (o.date_prevue || null) && a !== S.user.id) aPrevenir.push(o.id);
+        const { error } = await sb.from("ordres_travail").update(patch).eq("id", o.id);
+        if (error) { toast(error.message); ev.target.disabled = false; return; }
+      }
+      await loadAll(); renderAffectation(); toast(`${l.length} OT mis à jour`);
+      if (aPrevenir.length) notifierAffectation(aPrevenir);
+    };
+  }
+}
+
+// =====================================================================
 // ÉQUIPE ET RÔLES
 // =====================================================================
 function optsAssign(sel) {
@@ -1385,7 +1485,7 @@ function renderMonEspace() {
   $view.innerHTML = `<h1 style="font-size:30px;margin-bottom:4px">Bonjour ${esc(((S.me || {}).nom || "").split(" ")[0])}</h1>
   <p class="m" style="margin-bottom:16px">Équipe ${esc(S.tech.entreprise || S.tech.nom)} · votre espace technicien</p>
   <div class="kpis">
-    <div class="kpi"><b>${aFaire.length}</b><span>OT à réaliser</span></div>
+    <div class="kpi"><b>${aFaire.length}</b><span>tâches à réaliser${aFaire.filter(o => !o.vu_le).length ? ` · <b style="color:var(--bad)">${aFaire.filter(o => !o.vu_le).length} nouvelle(s)</b>` : ""}</span></div>
     <div class="kpi alert"><b>${aFaire.filter(otEnRetard).length}</b><span>en retard</span></div>
     <div class="kpi"><b>${aFaire.filter(o => o.statut === "en_cours").length}</b><span>en cours</span></div>
     <div class="kpi"><b>${finis.length}</b><span>terminés ce mois</span></div>
@@ -1410,7 +1510,7 @@ function renderEquipe() {
     <div class="panel"><h3>Membres (${m.length + 1})</h3>
       <div class="row" style="cursor:default;grid-template-columns:auto 1fr auto"><div class="ic">👑</div><div><div class="t">${esc(S.tech.nom || "Responsable")}</div><div class="m">Titulaire du compte · responsable</div></div><span></span></div>
       ${m.map(x => `<div class="row" style="cursor:default;grid-template-columns:auto 1fr auto"><div class="ic">${x.role === "admin" ? "🧭" : "🔧"}</div><div><div class="t">${esc(x.nom || "Membre")}</div><div class="m">${x.role === "admin" ? "Responsable" : "Technicien"} · ${esc(x.telephone || "")} · ${(S.ots || []).filter(o => o.assigne_a === x.user_id && ["planifie", "en_cours"].includes(o.statut)).length} OT en cours</div></div>
-        ${x.user_id !== S.user.id ? `<span style="display:flex;gap:6px"><select class="field" data-role="${x.id}" style="width:auto;padding:5px 8px"><option value="technicien" ${x.role === "technicien" ? "selected" : ""}>Technicien</option><option value="admin" ${x.role === "admin" ? "selected" : ""}>Responsable</option></select><button class="btn btn-ghost btn-sm" data-rmm="${x.id}" style="color:var(--bad)">Retirer</button></span>` : "<span></span>"}</div>`).join("")}
+        ${x.user_id !== S.user.id ? `<span style="display:flex;gap:6px"><select class="field" data-role="${x.id}" style="width:auto;padding:5px 8px"><option value="technicien" ${x.role === "technicien" ? "selected" : ""}>Technicien</option><option value="admin" ${x.role === "admin" ? "selected" : ""}>Responsable</option></select><button class="btn btn-ghost btn-sm" data-tel="${x.id}" title="Numéro WhatsApp pour recevoir les tâches">📱 WhatsApp</button><button class="btn btn-ghost btn-sm" data-rmm="${x.id}" style="color:var(--bad)">Retirer</button></span>` : "<span></span>"}</div>`).join("")}
     </div>
     ${inv.length ? `<div class="panel"><h3>Invitations en attente</h3>${inv.map(x => `<div class="row" style="cursor:default;grid-template-columns:1fr auto"><div><div class="t">${esc(x.nom || x.email)}</div><div class="m">${esc(x.email)} · ${x.role === "admin" ? "responsable" : "technicien"}</div></div><span style="display:flex;gap:6px">${x.telephone ? `<a class="btn btn-teal btn-sm" target="_blank" rel="noopener" href="https://wa.me/${waNum(x.telephone)}?text=${encodeURIComponent(msgInvitation(x, lien))}">Relancer</a>` : ""}<button class="btn btn-ghost btn-sm" data-rmi="${x.id}">Annuler</button></span></div>`).join("")}</div>` : ""}
   </div>
@@ -1432,6 +1532,11 @@ function renderEquipe() {
   };
   document.querySelectorAll("[data-rmi]").forEach(b => b.onclick = async () => { await sb.from("invitations").delete().eq("id", b.dataset.rmi); await loadAll(); renderEquipe(); });
   document.querySelectorAll("[data-rmm]").forEach(b => b.onclick = () => confirmBox("Retirer ce membre de l'équipe ? Il n'aura plus accès aux données.", async () => { const { error } = await sb.from("membres").delete().eq("id", b.dataset.rmm); if (error) return toast(error.message); await loadAll(); renderEquipe(); }));
+  document.querySelectorAll("[data-tel]").forEach(b => b.onclick = () => {
+    const x = S.membres.find(m => m.id === b.dataset.tel);
+    modal(`<div class="panel"><h3>WhatsApp de ${esc(x.nom || "ce membre")}</h3><p class="m">Numéro sur lequel il reçoit ses tâches.</p><input class="field" id="telM" value="${esc(x.telephone || "")}" placeholder="+229 01 XX XX XX XX" style="margin:10px 0"><div style="display:flex;gap:8px"><button class="btn btn-hot" id="telOk">Enregistrer</button><button class="btn btn-ghost" data-close>Annuler</button></div></div>`);
+    document.getElementById("telOk").onclick = async () => { const { error } = await sb.from("membres").update({ telephone: document.getElementById("telM").value.trim() }).eq("id", x.id); if (error) return toast(error.message); modal(""); await loadAll(); renderEquipe(); toast("Numéro enregistré"); };
+  });
   document.querySelectorAll("[data-role]").forEach(sel => sel.onchange = async () => { const { error } = await sb.from("membres").update({ role: sel.value }).eq("id", sel.dataset.role); if (error) return toast(error.message); await loadAll(); renderEquipe(); toast("Rôle modifié"); });
 }
 function msgInvitation(x, lien) {
