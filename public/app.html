@@ -8,7 +8,7 @@
 <link rel="manifest" href="manifest.json">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=IBM+Plex+Mono:wght@400;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=9">
+<link rel="stylesheet" href="style.css?v=12">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="config.js?v=4"></script>
 </head>
@@ -16,6 +16,7 @@
 <nav class="top noprint"><div class="wrap">
   <a class="logo" href="#tableau"><i>✳</i>FroidPass</a>
   <div class="menu" id="menu" hidden>
+    <a href="#scan" data-v="scan">📷 Scanner</a>
     <a href="#tableau" data-v="tableau">Tableau</a>
     <a href="#ot" data-v="ot">Travaux</a>
     <a href="#planning" data-v="planning">Planning</a>
@@ -30,7 +31,14 @@
 </div></nav>
 <main><div class="wrap" id="view"><p class="empty">Chargement…</p></div></main>
 <div id="modal"></div>
+<nav class="bas noprint" id="bas" hidden>
+  <a href="#tableau" data-b="tableau"><i>🏠</i>Accueil</a>
+  <a href="#ot" data-b="ot"><i>🛠️</i><span id="basOt">Travaux</span></a>
+  <a href="#scan" data-b="scan" class="scan"><i>📷</i>Scanner</a>
+  <a href="#parc" data-b="parc"><i>❄️</i>Parc</a>
+  <a href="javascript:void 0" id="basPlus"><i>☰</i>Plus</a>
+</nav>
 <div class="toast" id="toast"></div>
-<script type="module" src="app.js?v=14"></script>
+<script type="module" src="app.js?v=15"></script>
 </body>
 </html>

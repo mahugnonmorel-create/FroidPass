@@ -6,6 +6,11 @@
 -- Photos des interventions (la colonne est aussi créée par mise-a-jour-photos.sql)
 alter table public.interventions add column if not exists photos jsonb not null default '[]'::jsonb;
 
+-- controles : [{ "point": "Filtres", "etat": "ok|anomalie|na" }]
+alter table public.interventions add column if not exists controles jsonb not null default '[]'::jsonb;
+-- signature : { "path": "<org>/signatures/<uuid>.png", "nom": "M. Dossou", "date": "..." }
+alter table public.interventions add column if not exists signature jsonb;
+
 -- E-mail du client et code secret du rapport (différent du QR affiché sur le site)
 alter table public.clients add column if not exists email text not null default '';
 alter table public.clients add column if not exists code_rapport text;
@@ -66,7 +71,7 @@ begin
         'signalements', (select count(*) from public.signalements s where s.equipement_id = e.id and s.created_at >= d and s.created_at < f))
       order by e.zone, e.emplacement) from public.equipements e where e.client_id = c.id), '[]'::json),
     'interventions', coalesce((select json_agg(json_build_object(
-        'date', i.date, 'type', i.type, 'equipement_id', e.id, 'equipement', e.emplacement, 'observations', i.observations,
+        'date', i.date, 'type', i.type, 'equipement_id', e.id, 'equipement', e.emplacement, 'controles', i.controles, 'signature', i.signature, 'observations', i.observations,
         'hp', i.hp, 'bp', i.bp, 'intensite', i.intensite, 't_soufflage', i.t_soufflage, 't_reprise', i.t_reprise,
         -- photos : l'analyse IA n'est transmise au client que si le responsable l'a validée
         'photos', (select coalesce(jsonb_agg(case when coalesce((p->'analyse'->>'valide')::boolean, false) then p else p - 'analyse' end), '[]'::jsonb) from jsonb_array_elements(coalesce(i.photos, '[]'::jsonb)) p)) order by i.date)

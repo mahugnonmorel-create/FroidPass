@@ -28,11 +28,11 @@ const TYPES = {
 const CRIT = { normale: { label: "Normale", cls: "" }, haute: { label: "Haute", cls: "p-warn" }, critique: { label: "Critique", cls: "p-bad" } };
 const PLANS = [
   { id: "fondateur",      nom: "Membre fondateur", prix: 15000, detail: "3 mois de Solo, puis prix bloqué à 10 000 FCFA", hot: true },
-  { id: "solo_mensuel",   nom: "Solo · 1 mois",  prix: 10000,  detail: "60 équipements, relances, certificat" },
+  { id: "solo_mensuel",   nom: "Solo · 1 mois",  prix: 10000,  detail: "60 équipements, relances, certificat, rapports clients, 1 aide" },
   { id: "solo_annuel",    nom: "Solo · 12 mois", prix: 100000, detail: "10 mois payés pour 12" },
-  { id: "pro_mensuel",    nom: "Pro · 1 mois",   prix: 20000,  detail: "Équipements illimités" },
+  { id: "pro_mensuel",    nom: "Pro · 1 mois",   prix: 20000,  detail: "Équipements illimités, 3 membres d'équipe" },
   { id: "pro_annuel",     nom: "Pro · 12 mois",  prix: 200000, detail: "10 mois payés pour 12" },
-  { id: "equipe_mensuel", nom: "Équipe · 1 mois", prix: 40000, detail: "Équipe (responsable + techniciens), multi-sites, GMAO complète" }
+  { id: "equipe_mensuel", nom: "Équipe · 1 mois", prix: 40000, detail: "Jusqu'à 15 membres (responsables + techniciens), multi-sites, GMAO complète" }
 ];
 const DAY = 864e5;
 const _n = new Date();
@@ -74,6 +74,7 @@ function flags(x) {
     if (dt < 8) out.push(`Écart reprise/soufflage de ${dt.toFixed(1)} °C, plutôt faible : vérifier l'encrassement de l'évaporateur et la charge en fluide (mesure de surchauffe). Indication à confirmer sur place.`);
   }
   if (/corros/i.test(x.observations || "")) out.push("Corrosion signalée : prévoir un traitement anticorrosion et rapprocher le contrôle.");
+  for (const c of Array.isArray(x.controles) ? x.controles : []) if (c.etat === "anomalie") out.push(`Point de contrôle non conforme : ${esc(c.point)}${c.note ? " — " + esc(c.note) : ""}. Action corrective à planifier.`);
   return out;
 }
 function offreActive() {
@@ -124,6 +125,95 @@ async function loadAll() {
   S.gmao = !o.error; S.ots = o.error ? [] : o.data; S.pieces = pc.error ? [] : pc.data; S.consos = cs.error ? [] : cs.data;
   S.tech = t.data; S.clients = c.data; S.eqs = e.data; S.ints = i.data; S.pays = p.data;
 }
+
+// =====================================================================
+// TERRAIN : listes de contrôle, signature du client, dictée vocale, scan QR
+// =====================================================================
+const pointsControle = type => String((TYPES[type] || TYPES.split).pts || "").split(/,\s*/).map(x => x.trim()).filter(Boolean).map(x => x[0].toUpperCase() + x.slice(1));
+function controlesChampHTML(type) {
+  const pts = pointsControle(type); if (!pts.length) return "";
+  return `<div class="full ctl-champ"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><b style="font-size:14px">✅ Points de contrôle</b><button type="button" class="btn btn-ghost btn-sm" data-toutok>Tout est OK</button></div>
+    ${pts.map((p, k) => `<div class="ctl" data-point="${esc(p)}"><span>${esc(p)}</span><span class="seg">${[["ok", "✔ OK"], ["anomalie", "⚠ Anomalie"], ["na", "N/A"]].map(([v, l]) => `<label><input type="radio" name="ctl_${k}" value="${v}"><i>${l}</i></label>`).join("")}</span><input class="field ctl-note" name="ctlnote_${k}" placeholder="Précision sur l'anomalie" hidden></div>`).join("")}</div>`;
+}
+function brancherControles(form) {
+  const box = form.querySelector(".ctl-champ"); if (!box) return () => [];
+  box.querySelector("[data-toutok]").onclick = () => box.querySelectorAll('input[value="ok"]').forEach(r => { r.checked = true; r.dispatchEvent(new Event("change", { bubbles: true })); });
+  box.onchange = ev => { const row = ev.target.closest(".ctl"); if (row && ev.target.type === "radio") row.querySelector(".ctl-note").hidden = ev.target.value !== "anomalie"; };
+  return () => [...box.querySelectorAll(".ctl")].map(row => { const r = row.querySelector("input:checked"); if (!r) return null; const note = row.querySelector(".ctl-note").value.trim(); return { point: row.dataset.point, etat: r.value, ...(r.value === "anomalie" && note ? { note: note.slice(0, 200) } : {}) }; }).filter(Boolean);
+}
+function controlesHTML(list) {
+  if (!Array.isArray(list) || !list.length) return "";
+  const ic = { ok: ["✔", "p-ok"], anomalie: ["⚠", "p-bad"], na: ["–", ""] };
+  return `<div class="ctl-res">${list.map(c => `<span class="pill ${ic[c.etat]?.[1] || ""}" title="${esc(c.note || "")}">${ic[c.etat]?.[0] || ""} ${esc(c.point)}</span>`).join("")}</div>`;
+}
+const signatureChampHTML = (nom = "") => `<details class="full sig-champ"><summary><b style="font-size:14px">✍️ Signature du client</b> <span class="m">(facultatif)</span></summary>
+  <div style="margin-top:8px"><canvas class="sig-pad" width="600" height="180"></canvas>
+  <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap"><input class="field" name="signataire" placeholder="Nom du signataire" value="${esc(nom)}" style="flex:1;min-width:180px"><button type="button" class="btn btn-ghost btn-sm" data-sigclear>Effacer</button></div>
+  <p class="m" style="font-size:12px;margin-top:4px">Le client signe avec le doigt pour attester la réalisation de l'intervention.</p></div></details>`;
+function brancherSignature(form) {
+  const cv = form.querySelector(".sig-pad"); if (!cv) return async () => null;
+  const ctx = cv.getContext("2d"); let dessin = false, vide = true;
+  ctx.lineWidth = 2.6; ctx.lineCap = "round"; ctx.strokeStyle = "#0b2230";
+  const pos = ev => { const r = cv.getBoundingClientRect(), t = ev.touches ? ev.touches[0] : ev; return [(t.clientX - r.left) * cv.width / r.width, (t.clientY - r.top) * cv.height / r.height]; };
+  const debut = ev => { ev.preventDefault(); dessin = true; vide = false; ctx.beginPath(); ctx.moveTo(...pos(ev)); };
+  const trace = ev => { if (!dessin) return; ev.preventDefault(); ctx.lineTo(...pos(ev)); ctx.stroke(); };
+  const fin = () => { dessin = false; };
+  cv.addEventListener("pointerdown", debut); cv.addEventListener("pointermove", trace); window.addEventListener("pointerup", fin);
+  cv.addEventListener("touchstart", debut, { passive: false }); cv.addEventListener("touchmove", trace, { passive: false }); cv.addEventListener("touchend", fin);
+  form.querySelector("[data-sigclear]").onclick = () => { ctx.clearRect(0, 0, cv.width, cv.height); vide = true; };
+  return async () => {
+    if (vide) return null;
+    const blob = await new Promise(ok => cv.toBlob(ok, "image/png"));
+    const path = `${S.orgId}/signatures/${crypto.randomUUID()}.png`;
+    const { error } = await sb.storage.from("photos").upload(path, blob, { contentType: "image/png" });
+    if (error) throw new Error("Enregistrement de la signature impossible : " + error.message);
+    return { path, nom: (form.querySelector("[name=signataire]")?.value || "").trim().slice(0, 80), date: new Date().toISOString() };
+  };
+}
+const signatureHTML = sig => sig?.path ? `<div class="sig-img"><img src="${photoUrl(sig.path)}" alt="Signature"><span class="m">Signé${sig.nom ? " par " + esc(sig.nom) : ""} le ${fr(sig.date)}</span></div>` : "";
+// Dictée vocale (navigateur Chrome / Android) : bouton 🎤 à côté des champs texte
+const DICTEE = window.SpeechRecognition || window.webkitSpeechRecognition;
+const micHTML = cible => DICTEE ? `<button type="button" class="btn btn-ghost btn-sm mic" data-mic="${cible}" title="Dicter">🎤 Dicter</button>` : "";
+let dicteeEnCours = null;
+document.addEventListener("click", ev => {
+  const b = ev.target.closest("[data-mic]"); if (!b || !DICTEE) return;
+  if (dicteeEnCours) { dicteeEnCours.stop(); return; }
+  const champ = document.querySelector(b.dataset.mic); if (!champ) return;
+  const rec = new DICTEE(); rec.lang = "fr-FR"; rec.interimResults = false; rec.continuous = true; dicteeEnCours = rec;
+  b.classList.add("on"); b.textContent = "⏹ Arrêter";
+  rec.onresult = e => { for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) champ.value = (champ.value ? champ.value.replace(/\s*$/, " ") : "") + e.results[i][0].transcript.trim(); champ.dispatchEvent(new Event("input", { bubbles: true })); };
+  rec.onerror = e => toast(e.error === "not-allowed" ? "Autorisez le micro pour dicter" : "Dictée interrompue (" + e.error + ")");
+  rec.onend = () => { dicteeEnCours = null; b.classList.remove("on"); b.textContent = "🎤 Dicter"; };
+  rec.start();
+});
+// Scanner un QR FroidPass avec la caméra du téléphone → ouvre directement la fiche de l'équipement
+async function renderScan() {
+  $view.innerHTML = `<h1 style="font-size:26px;margin-bottom:6px">📷 Scanner un équipement</h1><p class="m" style="margin-bottom:12px">Visez l'étiquette QR : la fiche s'ouvre directement sur « Nouvelle intervention ».</p>
+    <div class="scan-box"><video id="scanV" playsinline muted></video><div class="scan-cadre"></div></div>
+    <p class="m" id="scanMsg" style="margin-top:8px">Démarrage de la caméra…</p>
+    <form id="scanCode" style="display:flex;gap:8px;margin-top:10px;max-width:420px"><input class="field" name="c" placeholder="Ou tapez le code sous le QR"><button class="btn btn-ghost btn-sm">Ouvrir</button></form>`;
+  const ouvrir = txt => {
+    const m = String(txt).match(/[?&]c=([A-Za-z0-9]+)/), code = m ? m[1] : String(txt).trim();
+    const e = S.eqs.find(x => x.code_public === code);
+    if (!e) { document.getElementById("scanMsg").textContent = "QR lu, mais cet équipement n'est pas dans votre parc."; return false; }
+    arreterScan(); location.hash = "eq-" + e.id; setTimeout(() => document.getElementById("intForm")?.scrollIntoView({ behavior: "smooth" }), 400); toast("Équipement : " + e.emplacement); return true;
+  };
+  document.getElementById("scanCode").onsubmit = ev => { ev.preventDefault(); ouvrir(new FormData(ev.target).get("c")); };
+  const v = document.getElementById("scanV"), msg = document.getElementById("scanMsg");
+  try {
+    scanFlux = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+    v.srcObject = scanFlux; await v.play(); msg.textContent = "Caméra prête : cadrez le QR.";
+    let lire;
+    if ("BarcodeDetector" in window) { const det = new BarcodeDetector({ formats: ["qr_code"] }); lire = async () => (await det.detect(v))[0]?.rawValue; }
+    else { const jsQR = (await import("https://cdn.jsdelivr.net/npm/jsqr@1.4.0/+esm")).default; const cv = document.createElement("canvas"), cx = cv.getContext("2d", { willReadFrequently: true });
+      lire = async () => { if (!v.videoWidth) return null; cv.width = v.videoWidth; cv.height = v.videoHeight; cx.drawImage(v, 0, 0); const r = jsQR(cx.getImageData(0, 0, cv.width, cv.height).data, cv.width, cv.height); return r?.data; }; }
+    const boucle = async () => { if (!scanFlux || location.hash !== "#scan") return arreterScan(); try { const t = await lire(); if (t && ouvrir(t)) return; } catch {} setTimeout(boucle, 250); };
+    boucle();
+  } catch (e) { msg.textContent = "Caméra indisponible (" + (e.name === "NotAllowedError" ? "autorisation refusée" : e.message) + "). Tapez le code ci-dessous."; }
+}
+let scanFlux = null;
+function arreterScan() { if (scanFlux) { scanFlux.getTracks().forEach(t => t.stop()); scanFlux = null; } }
+window.addEventListener("hashchange", () => { if (location.hash !== "#scan") arreterScan(); });
 
 // =====================================================================
 // PHOTOS DES PIÈCES (défectueuses / remplacées) — compressées puis stockées dans Supabase Storage
@@ -231,9 +321,10 @@ function sectionPhotos(ints, nomEq, titre) {
 async function route() {
   if (!configured) return renderNotConfigured();
   const h = (location.hash || "#tableau").slice(1);
-  if (!S.user) { document.getElementById("menu").hidden = true; return renderAuth(h.startsWith("inscription") ? "inscription" : "connexion", h === "inscription-entreprise" ? "entreprise" : "technicien"); }
+  if (!S.user) { document.getElementById("menu").hidden = true; if (document.getElementById("bas")) { document.getElementById("bas").hidden = true; document.body.classList.remove("avec-bas"); } return renderAuth(h.startsWith("inscription") ? "inscription" : "connexion", h === "inscription-entreprise" ? "entreprise" : "technicien"); }
   majMenu();
   document.getElementById("menu").hidden = false;
+  majBarreBas(h);
   document.querySelectorAll("#menu a").forEach(a => a.classList.toggle("cur", h === a.dataset.v || h.startsWith(a.dataset.v + "-") || (h.startsWith("eq-") && a.dataset.v === "parc") || (["rapport", "siteqr"].some(x => h.startsWith(x)) && a.dataset.v === "clients")));
   window.scrollTo(0, 0);
   majMenuRole();
@@ -247,6 +338,7 @@ async function route() {
   if (h === "rapport-global") return renderRapportGlobal();
   if (h === "planning") return renderPlanning();
   if (h.startsWith("ot-bon-")) return renderBon(h.slice(7));
+  if (h === "scan") return renderScan();
   if (h === "affectation") return isAdmin() ? renderAffectation() : (location.hash = "ot");
   if (h.startsWith("ot-")) return renderOTDetail(h.slice(3));
   if (h === "ot") return renderOT();
@@ -284,7 +376,7 @@ function renderAuth(mode, profilInit = "technicien") {
       <button class="btn btn-hot" type="submit">${ins ? "Créer mon compte gratuit" : "Se connecter"}</button>
     </form>
     <p class="m" style="margin-top:14px">${ins ? `Déjà inscrit ? <a href="#connexion">Se connecter</a>` : `Pas encore de compte ? <a href="#inscription">Créer un compte gratuit</a> · <a href="#" id="reset">Mot de passe oublié</a>`}</p>
-  </div>`;
+  <p class="m" style="font-size:12.5px;margin-top:12px">En créant un compte, vous acceptez les <a href="/cgu" target="_blank">conditions d'utilisation</a> et la <a href="/confidentialite" target="_blank">politique de confidentialité</a>.</p></div>`;
   document.getElementById("authForm").onsubmit = async ev => {
     ev.preventDefault();
     const f = Object.fromEntries(new FormData(ev.target)); const b = ev.target.querySelector("button"); b.disabled = true;
@@ -372,7 +464,7 @@ function renderParc() {
   const sorted = [...S.eqs].sort((a, b) => status(a).d - status(b).d);
   $view.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:end;gap:10px;flex-wrap:wrap;margin-bottom:14px">
     <h1 style="font-size:28px">Mon parc</h1>
-    <div style="display:flex;gap:8px;flex-wrap:wrap"><a class="btn btn-ghost btn-sm" href="#etiquettes">Imprimer les étiquettes QR</a><button class="btn btn-ghost btn-sm" id="csv">Exporter (CSV)</button><button class="btn btn-hot btn-sm" data-addeq>+ Équipement</button></div></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><a class="btn btn-ghost btn-sm" href="#etiquettes">Imprimer les étiquettes QR</a><button class="btn btn-ghost btn-sm" id="csv">Exporter (CSV)</button>${isAdmin() ? `<button class="btn btn-teal btn-sm" id="imp">📥 Importer (Excel / CSV)</button>` : ""}<button class="btn btn-hot btn-sm" data-addeq>+ Équipement</button></div></div>
     <div class="panel"><input class="field" id="q" placeholder="Rechercher (client, emplacement, marque…)" style="margin-bottom:8px">
     <div id="list">${sorted.map(eqRow).join("") || `<p class="empty">Aucun équipement. Commencez par créer un client, puis un équipement.</p>`}</div></div>`;
   document.getElementById("q").oninput = ev => {
@@ -380,6 +472,7 @@ function renderParc() {
     document.getElementById("list").innerHTML = sorted.filter(e => (e.emplacement + client(e.client_id).nom + e.marque).toLowerCase().includes(q)).map(eqRow).join("");
   };
   document.getElementById("csv").onclick = exportCsv;
+  if (document.getElementById("imp")) document.getElementById("imp").onclick = openImport;
 }
 
 function measHTML(x) {
@@ -406,7 +499,7 @@ function renderEq(id) {
       <h3>Nouvelle intervention</h3>
       <div class="ai"><b style="font-size:14.5px">Saisie rapide</b>
         <p class="m" style="margin:4px 0 8px">Écrivez comme vous parlez, l'application remplit la fiche.</p>
-        <textarea class="field" id="dict" rows="2" placeholder="Préventif, filtres nettoyés, HP 27 bars, BP 8,5, intensité 6,3 A, soufflage 14, reprise 25"></textarea>
+        ${micHTML("#dict")}<textarea class="field" id="dict" rows="2" placeholder="Préventif, filtres nettoyés, HP 27 bars, BP 8,5, intensité 6,3 A, soufflage 14, reprise 25"></textarea>
         <button class="btn btn-teal btn-sm" style="margin-top:8px" id="parse">Remplir la fiche</button></div>
       <form class="form" id="intForm">
         <label>Date<input class="field" type="date" name="date" value="${iso(TODAY)}" required></label>
@@ -416,8 +509,10 @@ function renderEq(id) {
         <label>Intensité absorbée (A)<input class="field mono" name="intensite" inputmode="decimal"></label>
         <label>T soufflage (°C)<input class="field mono" name="t_soufflage" inputmode="decimal"></label>
         <label>T reprise (°C)<input class="field mono" name="t_reprise" inputmode="decimal"></label>
-        <label class="full">Observations<textarea class="field" name="observations" rows="2"></textarea></label>
+        ${controlesChampHTML(e.type)}
+        <label class="full">Observations ${micHTML("#obsInt")}<textarea class="field" name="observations" id="obsInt" rows="2"></textarea></label>
         ${photosChampHTML()}
+        ${signatureChampHTML(client(e.client_id).contact || "")}
         <div class="full"><button class="btn btn-hot" type="submit">Enregistrer l'intervention</button></div>
       </form>
     </div>
@@ -429,29 +524,33 @@ function renderEq(id) {
           <a class="btn btn-ghost btn-sm" href="#cert-${e.id}">Certificat d'entretien</a>
           <a class="btn btn-ghost btn-sm" href="/depannage?marque=${encodeURIComponent(["Gree","LG","Samsung","Daikin","Midea"].find(m => (e.marque || "").toLowerCase().includes(m.toLowerCase())) || "*")}">Dépannage / codes erreur</a>
           <button class="btn btn-teal btn-sm" data-relance="${e.id}">Relance WhatsApp</button>
+          <button class="btn btn-ghost btn-sm" id="editEq">✏️ Modifier</button>
           ${isAdmin() ? `<button class="btn btn-ghost btn-sm" id="delEq" style="color:var(--bad)">Supprimer</button>` : ""}</div></div></div>
       ${sigsHTML(S.sigs.filter(x => x.equipement_id === e.id && x.statut !== "resolu"))}
       <div class="panel"><h3>Historique</h3><div class="hist">${list.length ? list.map(x => `
         <div class="it"><b class="mono" style="font-size:13.5px">${fr(x.date)}</b> · <b>${x.type === "preventif" ? "Préventif" : "Curatif"}</b>
           <button class="btn btn-sm noprint" style="padding:0 6px;color:var(--mute);background:none" data-delint="${x.id}" title="Supprimer" ${isAdmin() ? "" : "hidden"}>✕</button>
-          <div class="m">${esc(x.observations)}</div>${measHTML(x)}${photosHTML(x.photos, x)}${flags(x).map(f => `<div class="flag">⚠ ${f}</div>`).join("")}</div>`).join("")
+          <div class="m">${esc(x.observations)}</div>${measHTML(x)}${controlesHTML(x.controles)}${photosHTML(x.photos, x)}${signatureHTML(x.signature)}${flags(x).map(f => `<div class="flag">⚠ ${f}</div>`).join("")}</div>`).join("")
         : `<p class="empty">Aucune intervention.</p>`}</div></div>
     </div>
   </div>`;
   if (window.QRCode) new QRCode(document.getElementById("qr"), { text: publicUrl(e.code_public), width: 128, height: 128, colorDark: "#0b2230", colorLight: "#ffffff" });
   document.getElementById("parse").onclick = parseDict;
   const envoyerPhotos = brancherPhotos(document.getElementById("intForm"), e.id);
+  const lireCtl = brancherControles(document.getElementById("intForm")), envoyerSig = brancherSignature(document.getElementById("intForm"));
   document.getElementById("intForm").onsubmit = async ev => {
     ev.preventDefault();
-    const o = Object.fromEntries([...new FormData(ev.target)].filter(([k]) => !k.startsWith("ph")));
+    const o = Object.fromEntries([...new FormData(ev.target)].filter(([k]) => ["date", "type", "hp", "bp", "intensite", "t_soufflage", "t_reprise", "observations"].includes(k)));
+    const controles = lireCtl(); if (controles.length) o.controles = controles;
     for (const k of ["hp", "bp", "intensite", "t_soufflage", "t_reprise"]) o[k] = o[k] === "" ? null : Number(String(o[k]).replace(",", "."));
     const b = ev.target.querySelector("button[type=submit]"); b.disabled = true;
     let photos = [];
-    try { photos = await envoyerPhotos(); } catch (err) { toast(err.message); b.disabled = false; return; }
+    try { photos = await envoyerPhotos(); const sig = await envoyerSig(); if (sig) o.signature = sig; } catch (err) { toast(err.message); b.disabled = false; return; }
     const { error } = await sb.from("interventions").insert({ ...o, equipement_id: e.id, ...(photos.length ? { photos } : {}) });
     if (error) { await supprimerPhotos(photos); toast(error.message); b.disabled = false; return; }
     await loadAll(); renderEq(e.id); toast("Intervention enregistrée · prochain entretien recalculé");
   };
+  document.getElementById("editEq").onclick = () => openAddEq(e);
   if (document.getElementById("delEq")) document.getElementById("delEq").onclick = () => confirmBox(`Supprimer « ${esc(e.emplacement)} » et tout son historique ?`, async () => {
     const { error } = await sb.from("equipements").delete().eq("id", e.id);
     if (error) return toast(error.message);
@@ -486,34 +585,38 @@ function confirmBox(msg, ok) {
   document.getElementById("cOk").onclick = () => { modal(""); ok(); };
 }
 
-function openAddEq() {
+function openAddEq(ed = null) {
   if (!S.clients.length) { location.hash = "clients"; toast("Créez d'abord un client"); return; }
-  modal(`<div class="panel"><h3>Nouvel équipement</h3><form class="form" id="eqForm">
-    <label class="full">Client<select class="field" name="client_id">${S.clients.map(c => `<option value="${c.id}">${esc(c.nom)}</option>`).join("")}</select></label>
-    <label>Zone (facultatif)<input class="field" name="zone" list="zones" placeholder="Bâtiment A, Restaurant…"><datalist id="zones">${[...new Set(S.eqs.map(e => e.zone).filter(Boolean))].map(z => `<option value="${esc(z)}">`).join("")}</datalist></label>
-    <label>Emplacement<input class="field" name="emplacement" placeholder="Ex. Chambre 12, Cuisine" required></label>
-    <label>Type<select class="field" name="type">${Object.entries(TYPES).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join("")}</select></label>
-    <label>Criticité<select class="field" name="criticite"><option value="normale">Normale</option><option value="haute">Haute</option><option value="critique">Critique (bloc, pharmacie, serveur…)</option></select></label>
-    <label>Fréquence personnalisée (jours)<input class="field" name="frequence_jours" type="number" min="7" max="730" placeholder="Auto selon le type"></label>
-    <label class="full">Où est installé l'équipement ? <span class="m">(split, cassette, VRV : là où se trouve l'unité extérieure)</span><select class="field" name="environnement" required><option value="">— Choisir —</option>${Object.entries(ENV).map(([k, [l]]) => `<option value="${k}">${l}</option>`).join("")}</select><span class="m" id="envAide"></span></label>
-    <label>Marque<input class="field" name="marque"></label>
-    <label>Puissance<input class="field" name="puissance" placeholder="12 000 BTU, 3,5 kW…"></label>
-    <label>Fluide frigorigène<select class="field" name="fluide"><option>R410A</option><option>R32</option><option>R22</option><option>R404A</option><option>R134a</option><option>R290</option><option>Autre</option></select></label>
-    <label>Date de pose<input class="field" type="date" name="date_pose" value="${iso(TODAY)}"></label>
-    <div class="full" style="display:flex;gap:8px"><button class="btn btn-hot" type="submit">Créer et générer le QR</button><button class="btn btn-ghost" type="button" data-close>Annuler</button></div>
+  const v = k => ed ? esc(ed[k] ?? "") : "", sel = (k, val) => ed && ed[k] === val ? "selected" : "";
+  const fluides = ["R410A", "R32", "R22", "R404A", "R134a", "R290", "R407C", "Autre"];
+  modal(`<div class="panel"><h3>${ed ? "Modifier l'équipement" : "Nouvel équipement"}</h3><form class="form" id="eqForm">
+    <label class="full">Client<select class="field" name="client_id">${S.clients.map(c => `<option value="${c.id}" ${sel("client_id", c.id)}>${esc(c.nom)}</option>`).join("")}</select></label>
+    <label>Zone (facultatif)<input class="field" name="zone" list="zones" value="${v("zone")}" placeholder="Bâtiment A, Restaurant…"><datalist id="zones">${[...new Set(S.eqs.map(e => e.zone).filter(Boolean))].map(z => `<option value="${esc(z)}">`).join("")}</datalist></label>
+    <label>Emplacement<input class="field" name="emplacement" value="${v("emplacement")}" placeholder="Ex. Chambre 12, Cuisine" required></label>
+    <label>Type<select class="field" name="type">${Object.entries(TYPES).map(([k, t]) => `<option value="${k}" ${sel("type", k)}>${t.label}</option>`).join("")}</select></label>
+    <label>Criticité<select class="field" name="criticite"><option value="normale">Normale</option><option value="haute" ${sel("criticite", "haute")}>Haute</option><option value="critique" ${sel("criticite", "critique")}>Critique (bloc, pharmacie, serveur…)</option></select></label>
+    <label>Fréquence personnalisée (jours)<input class="field" name="frequence_jours" type="number" min="7" max="730" value="${v("frequence_jours")}" placeholder="Auto selon le type"></label>
+    <label class="full">Où est installé l'équipement ? <span class="m">(split, cassette, VRV : là où se trouve l'unité extérieure)</span><select class="field" name="environnement" required><option value="">— Choisir —</option>${Object.entries(ENV).map(([k, [l]]) => `<option value="${k}" ${sel("environnement", k)}>${l}</option>`).join("")}</select><span class="m" id="envAide"></span></label>
+    <label>Marque<input class="field" name="marque" value="${v("marque")}"></label>
+    <label>Puissance<input class="field" name="puissance" value="${v("puissance")}" placeholder="12 000 BTU, 3,5 kW…"></label>
+    <label>Fluide frigorigène<select class="field" name="fluide">${fluides.map(f => `<option ${ed && ed.fluide === f ? "selected" : ""}>${f}</option>`).join("")}${ed && ed.fluide && !fluides.includes(ed.fluide) ? `<option selected>${esc(ed.fluide)}</option>` : ""}</select></label>
+    <label>Date de pose<input class="field" type="date" name="date_pose" value="${ed ? v("date_pose") : iso(TODAY)}"></label>
+    <div class="full" style="display:flex;gap:8px"><button class="btn btn-hot" type="submit">${ed ? "Enregistrer les modifications" : "Créer et générer le QR"}</button><button class="btn btn-ghost" type="button" data-close>Annuler</button></div>
   </form></div>`);
   // Emplacement proposé : celui déjà utilisé le plus souvent pour ce client (modifiable) ; fréquence affichée en direct
-  const fEq = document.getElementById("eqForm"), envAide = () => { const v = fEq.environnement.value; document.getElementById("envAide").textContent = v ? `Entretien préventif conseillé : tous les ${freqDefaut(fEq.type.value, v)} jours` : ""; };
+  const fEq = document.getElementById("eqForm"), envAide = () => { const val = fEq.environnement.value; document.getElementById("envAide").textContent = val ? `Entretien préventif conseillé : tous les ${freqDefaut(fEq.type.value, val)} jours` : ""; };
   const envClient = () => { const n = {}; S.eqs.filter(e => e.client_id === fEq.client_id.value).forEach(e => n[e.environnement] = (n[e.environnement] || 0) + 1); const best = Object.entries(n).sort((a, b) => b[1] - a[1])[0]; fEq.environnement.value = best ? best[0] : ""; envAide(); };
-  fEq.client_id.onchange = envClient; fEq.environnement.onchange = envAide; fEq.type.onchange = envAide; envClient();
-  document.getElementById("eqForm").onsubmit = async ev => {
+  fEq.client_id.onchange = envClient; fEq.environnement.onchange = envAide; fEq.type.onchange = envAide; if (ed) envAide(); else envClient();
+  fEq.onsubmit = async ev => {
     ev.preventDefault(); const o = Object.fromEntries(new FormData(ev.target));
-    if (!o.zone) delete o.zone;
-    if (o.criticite === "normale") delete o.criticite;
-    if (!o.frequence_jours) delete o.frequence_jours; else o.frequence_jours = Number(o.frequence_jours);
-    const { data, error } = await sb.from("equipements").insert(o).select().single();
+    o.zone = o.zone.trim() || null;
+    o.frequence_jours = o.frequence_jours ? Number(o.frequence_jours) : null;
+    if (!ed) { if (!o.zone) delete o.zone; if (o.criticite === "normale") delete o.criticite; if (!o.frequence_jours) delete o.frequence_jours; }
+    const q = ed ? sb.from("equipements").update(o).eq("id", ed.id).select().single() : sb.from("equipements").insert(o).select().single();
+    const { data, error } = await q;
     if (error) { toast(error.message.startsWith("QUOTA") ? error.message.replace("QUOTA: ", "") : error.message); return; }
-    modal(""); await loadAll(); location.hash = "eq-" + data.id; toast("Équipement créé · QR prêt");
+    modal(""); await loadAll();
+    if (ed) { renderEq(ed.id); toast("Équipement modifié · historique conservé"); } else { location.hash = "eq-" + data.id; toast("Équipement créé · QR prêt"); }
   };
 }
 
@@ -566,9 +669,12 @@ function openEditClient(id, apres) {
     <label>${W().contact}<input class="field" name="contact" value="${esc(c.contact)}"></label>
     <label>${W().waContact}<input class="field" name="whatsapp" value="${esc(c.whatsapp)}"></label>
     <label>E-mail du client<input class="field" name="email" type="email" value="${esc(c.email)}" placeholder="contact@exemple.com"></label>
+    <label>Envoi automatique du rapport par e-mail <span class="m">(le 1er du mois, abonnés)</span><select class="field" name="rapport_auto"><option value="">Désactivé (envoi manuel)</option>${["mensuel", "trimestriel", "semestriel", "annuel"].map(k => `<option value="${k}" ${c.rapport_auto === k ? "selected" : ""}>${TYPES_PERIODE[k]}</option>`).join("")}</select></label>
     <div style="display:flex;gap:8px"><button class="btn btn-hot" type="submit">Enregistrer</button><button class="btn btn-ghost" type="button" data-close>Annuler</button></div></form></div>`);
   document.getElementById("ecForm").onsubmit = async ev => {
-    ev.preventDefault(); const o = Object.fromEntries(new FormData(ev.target)); o.email = o.email.trim() || null;
+    ev.preventDefault(); const o = Object.fromEntries(new FormData(ev.target)); o.email = o.email.trim() || "";
+    if ("rapport_auto" in o) o.rapport_auto = o.rapport_auto || null;
+    if (o.rapport_auto && !o.email) return toast("Ajoutez l'e-mail du client pour l'envoi automatique");
     const { error } = await sb.from("clients").update(o).eq("id", c.id);
     if (error) return toast(error.message);
     modal(""); await loadAll(); apres(); toast("Modifications enregistrées");
@@ -664,6 +770,119 @@ function renderCert(id) {
   ${list.map(x => `<tr><td class="mono">${fr(x.date)}</td><td>${x.type === "preventif" ? "Préventif" : "Curatif"}</td><td class="mono" style="font-size:12px">${[x.hp != null && "HP " + x.hp, x.bp != null && "BP " + x.bp, x.intensite != null && "I " + x.intensite + " A", x.t_soufflage != null && "Ts " + x.t_soufflage + " °C", x.t_reprise != null && "Tr " + x.t_reprise + " °C"].filter(Boolean).join(" · ") || "—"}</td><td>${esc(x.observations)}</td></tr>`).join("") || `<tr><td colspan="4">Aucune intervention</td></tr>`}</table>
   <div class="sig"><div>Le technicien<br><b style="color:var(--ink)">${esc(S.tech.nom)}</b></div><div>Le client<br><b style="color:var(--ink)">${esc(c.contact || c.nom)}</b></div></div>
   <p class="m" style="margin-top:20px">Carnet en ligne : ${esc(publicUrl(e.code_public))} · Généré par FroidPass</p></div>`;
+}
+
+// =====================================================================
+// IMPORT DU PARC (Excel .xlsx ou CSV) — sites créés automatiquement
+// =====================================================================
+const sansAccent = t => String(t ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
+const COLS_IMPORT = { site: /^(site|client|batiment principal|etablissement)/, zone: /^(zone|batiment|bloc|etage|aile)/, emplacement: /^(emplacement|local|piece|chambre|designation|nom)/, type: /^(type|categorie)/, marque: /^marque/, puissance: /^(puissance|capacite|btu|kw)/, fluide: /^(fluide|gaz|refrigerant)/, installation: /^(installation|environnement|exposition|situation)/, criticite: /^(criticite|importance)/, date_pose: /^(date|pose|mise en service)/, frequence_jours: /^(frequence|periodicite)/ };
+function typeDepuisTexte(t) {
+  const x = sansAccent(t);
+  const r = [[/mortuaire/, "chambre_mortuaire"], [/chambre ?froide|cf\b/, "chambre"], [/medical|vaccin|labo|pharma/, "frigo_medical"], [/precision|serveur|datacenter/, "clim_precision"], [/eau glacee|chiller|groupe d.eau/, "eau_glacee"], [/\bcta\b|traitement d.air/, "cta"], [/vrv|drv|vrf/, "vrv"], [/ventil|extract/, "ventilation"], [/vitrine|armoire|frigo|refrigerateur|congelateur/, "vitrine"], [/cassette|gainable|plafonnier/, "cassette"], [/groupe|unite exterieure|condenseur/, "groupe"], [/split|mural|console|clim/, "split"]];
+  for (const [re, k] of r) if (re.test(x)) return k;
+  return TYPES[x] ? x : null;
+}
+const envDepuisTexte = t => { const x = sansAccent(t); return !x ? null : /mer|cot|plage|littoral|sal/.test(x) ? "cotier" : /abri|interieur|local|ferme/.test(x) ? "interieur" : /dehors|exterieur|toit|terrasse|loin/.test(x) ? "exterieur" : ["cotier", "interieur", "exterieur"].includes(x) ? x : null; };
+function dateDepuis(v) {
+  if (v == null || v === "") return null;
+  if (/^\d{5}(\.\d+)?$/.test(String(v).trim())) v = Number(v);
+  if (typeof v === "number" && v > 20000 && v < 80000) return iso(Date.UTC(1899, 11, 30) + Math.floor(v) * DAY); // date Excel
+  const t = String(v).trim(); let m;
+  if ((m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))) return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+  if ((m = t.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/))) return `${m[3].length === 2 ? "20" + m[3] : m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  if ((m = t.match(/^(\d{4})$/))) return `${m[1]}-01-01`;
+  return null;
+}
+function lireCSV(txt) {
+  txt = txt.replace(/^﻿/, ""); const prem = txt.split(/\r?\n/)[0] || "", sep = (prem.match(/;/g) || []).length >= (prem.match(/,/g) || []).length ? ";" : (prem.includes("\t") ? "\t" : ",");
+  const rows = []; let row = [], cell = "", q = false;
+  for (let i = 0; i < txt.length; i++) { const ch = txt[i];
+    if (q) { if (ch === '"' && txt[i + 1] === '"') { cell += '"'; i++; } else if (ch === '"') q = false; else cell += ch; }
+    else if (ch === '"') q = true; else if (ch === sep) { row.push(cell); cell = ""; } else if (ch === "\n" || ch === "\r") { if (ch === "\r" && txt[i + 1] === "\n") i++; row.push(cell); rows.push(row); row = []; cell = ""; } else cell += ch; }
+  if (cell || row.length) { row.push(cell); rows.push(row); }
+  return rows.filter(r => r.some(c => String(c).trim()));
+}
+function modeleImport() {
+  const rows = [["site", "zone", "emplacement", "type", "marque", "puissance", "fluide", "installation", "criticite", "date_pose", "frequence_jours"],
+    ["Hôtel Plaza", "Bâtiment A", "Chambre 101", "split", "Gree", "12000 BTU", "R410A", "près de la mer", "normale", "15/03/2024", ""],
+    ["Hôtel Plaza", "Cuisine", "Chambre froide positive", "chambre froide", "Tecumseh", "3 kW", "R404A", "à l'abri", "haute", "2023", ""],
+    ["Clinique Abomey", "Bloc", "CTA bloc opératoire", "cta", "Carrier", "", "R410A", "dehors", "critique", "01/06/2022", "30"]];
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob(["﻿" + rows.map(r => r.join(";")).join("\n")], { type: "text/csv;charset=utf-8" })); a.download = "modele-import-froidpass.csv"; a.click();
+}
+async function lireFichierImport(f) {
+  if (/\.xlsx?$/i.test(f.name)) {
+    const XLSX = await import("https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm");
+    const wb = XLSX.read(await f.arrayBuffer(), { type: "array" });
+    return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: "" }).filter(r => r.some(c => String(c).trim()));
+  }
+  return lireCSV(await f.text());
+}
+function analyserImport(rows, envDefaut) {
+  if (rows.length < 2) throw new Error("Le fichier est vide ou n'a pas de ligne d'en-tête");
+  const head = rows[0].map(sansAccent), idx = {};
+  for (const [k, re] of Object.entries(COLS_IMPORT)) { const i = head.findIndex((h, j) => re.test(h) && !Object.values(idx).includes(j)); if (i >= 0) idx[k] = i; }
+  if (idx.emplacement == null) throw new Error("Colonne « emplacement » introuvable. Utilisez le modèle fourni.");
+  const get = (r, k) => idx[k] == null ? "" : r[idx[k]];
+  const vus = new Set();
+  return rows.slice(1).map((r, n) => {
+    const w = [], o = { ligne: n + 2 };
+    o.site = String(get(r, "site") || "").trim(); o.emplacement = String(get(r, "emplacement") || "").trim();
+    o.zone = String(get(r, "zone") || "").trim() || null; o.marque = String(get(r, "marque") || "").trim(); o.puissance = String(get(r, "puissance") || "").trim(); o.fluide = String(get(r, "fluide") || "").trim() || "R410A";
+    o.type = typeDepuisTexte(get(r, "type")); if (!o.type) { o.type = "split"; w.push("type inconnu → split"); }
+    o.environnement = envDepuisTexte(get(r, "installation")) || envDefaut; if (!envDepuisTexte(get(r, "installation"))) w.push("installation par défaut");
+    const c = sansAccent(get(r, "criticite")); o.criticite = /crit/.test(c) ? "critique" : /haut|elev/.test(c) ? "haute" : null;
+    o.date_pose = dateDepuis(get(r, "date_pose")) || iso(TODAY); if (get(r, "date_pose") && !dateDepuis(get(r, "date_pose"))) w.push("date illisible → aujourd'hui");
+    const fq = Number(String(get(r, "frequence_jours")).replace(",", ".")); o.frequence_jours = fq >= 7 && fq <= 730 ? Math.round(fq) : null;
+    o.erreur = !o.emplacement ? "emplacement manquant" : !o.site ? "site manquant" : null;
+    o.doublon = !o.erreur && S.eqs.some(e => sansAccent(e.emplacement) === sansAccent(o.emplacement) && sansAccent(client(e.client_id).nom) === sansAccent(o.site) && sansAccent(e.zone) === sansAccent(o.zone));
+    const cle = [o.site, o.zone, o.emplacement].map(sansAccent).join("|");
+    if (!o.erreur && !o.doublon && vus.has(cle)) { o.doublon = true; w.push("ligne en double dans le fichier"); }
+    vus.add(cle);
+    o.avert = w; return o;
+  });
+}
+function openImport() {
+  modal(`<div class="panel" style="max-width:980px"><h3>📥 Importer un parc d'équipements</h3>
+    <ol class="m" style="margin:6px 0 12px 18px;line-height:1.7"><li>Téléchargez le <a href="javascript:void 0" id="impMod">modèle</a> (ou utilisez votre propre fichier Excel : les colonnes sont reconnues automatiquement).</li><li>Une ligne par équipement. Les sites qui n'existent pas encore seront créés.</li><li>Vérifiez l'aperçu puis importez. Les doublons (même site, zone et emplacement) sont ignorés.</li></ol>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><label class="btn btn-teal btn-sm" style="cursor:pointer">Choisir le fichier (.xlsx ou .csv)<input type="file" id="impF" accept=".csv,.xlsx,.xls,text/csv" hidden></label>
+      <label class="m">Installation si non précisée : <select class="field" id="impEnv" style="width:auto;padding:6px 8px">${Object.entries(ENV).map(([k, [l]]) => `<option value="${k}">${l}</option>`).join("")}</select></label></div>
+    <div id="impApercu" style="margin-top:12px"></div>
+    <div style="display:flex;gap:8px;margin-top:12px"><button class="btn btn-hot" id="impGo" disabled>Importer</button><button class="btn btn-ghost" type="button" data-close>Fermer</button></div></div>`);
+  let lignes = [], brut = null;
+  const $ = id => document.getElementById(id);
+  $("impMod").onclick = modeleImport;
+  const apercu = () => {
+    if (!brut) return;
+    try { lignes = analyserImport(brut, $("impEnv").value); } catch (e) { $("impApercu").innerHTML = `<p style="color:var(--bad)">${esc(e.message)}</p>`; $("impGo").disabled = true; return; }
+    const ok = lignes.filter(l => !l.erreur && !l.doublon), nouveauxSites = [...new Set(ok.map(l => l.site))].filter(n => !S.clients.some(c => sansAccent(c.nom) === sansAccent(n)));
+    $("impApercu").innerHTML = `<p><b>${ok.length}</b> équipement(s) à importer · ${lignes.filter(l => l.doublon).length} doublon(s) ignoré(s) · <span style="color:${lignes.some(l => l.erreur) ? "var(--bad)" : "inherit"}">${lignes.filter(l => l.erreur).length} ligne(s) en erreur</span>${nouveauxSites.length ? ` · ${nouveauxSites.length} nouveau(x) site(s) : ${nouveauxSites.map(esc).join(", ")}` : ""}</p>
+      <div style="max-height:320px;overflow:auto;margin-top:8px"><table class="tbl" style="font-size:13px"><tbody><tr><th>Ligne</th><th>Site</th><th>Zone</th><th>Emplacement</th><th>Type</th><th>Installation</th><th>Pose</th><th>État</th></tr>
+      ${lignes.map(l => `<tr style="${l.erreur ? "background:#fff3f3" : l.doublon ? "opacity:.55" : ""}"><td>${l.ligne}</td><td>${esc(l.site)}</td><td>${esc(l.zone || "")}</td><td>${esc(l.emplacement)}</td><td>${TYPES[l.type].label}</td><td>${ENV[l.environnement][1]}</td><td class="mono">${fr(l.date_pose)}</td><td>${l.erreur ? `<span style="color:var(--bad)">✖ ${l.erreur}</span>` : l.doublon ? (l.avert.includes("ligne en double dans le fichier") ? "en double dans le fichier" : "déjà présent") : l.avert.length ? `<span class="m">⚠ ${l.avert.join(", ")}</span>` : "✔"}</td></tr>`).join("")}</tbody></table></div>`;
+    $("impGo").disabled = !ok.length; $("impGo").textContent = `Importer ${ok.length} équipement(s)`;
+  };
+  $("impEnv").onchange = apercu;
+  $("impF").onchange = async () => { const f = $("impF").files[0]; if (!f) return; $("impApercu").innerHTML = `<p class="m">Lecture de ${esc(f.name)}…</p>`; try { brut = await lireFichierImport(f); apercu(); } catch (e) { $("impApercu").innerHTML = `<p style="color:var(--bad)">Fichier illisible : ${esc(e.message)}</p>`; } };
+  $("impGo").onclick = async () => {
+    const ok = lignes.filter(l => !l.erreur && !l.doublon); if (!ok.length) return;
+    const b = $("impGo"); b.disabled = true;
+    try {
+      // 1. Sites manquants
+      const ids = {}; S.clients.forEach(c => ids[sansAccent(c.nom)] = c.id);
+      const manquants = [...new Set(ok.map(l => l.site))].filter(n => !ids[sansAccent(n)]);
+      if (manquants.length) { const { data, error } = await sb.from("clients").insert(manquants.map(nom => ({ nom }))).select(); if (error) throw error; data.forEach(c => ids[sansAccent(c.nom)] = c.id); }
+      // 2. Équipements par lots de 50
+      let faits = 0;
+      for (let k = 0; k < ok.length; k += 50) {
+        b.textContent = `Import… ${faits}/${ok.length}`;
+        const lot = ok.slice(k, k + 50).map(l => { const o = { client_id: ids[sansAccent(l.site)], emplacement: l.emplacement, type: l.type, marque: l.marque, puissance: l.puissance, fluide: l.fluide, environnement: l.environnement, date_pose: l.date_pose }; if (l.zone) o.zone = l.zone; if (l.criticite) o.criticite = l.criticite; if (l.frequence_jours) o.frequence_jours = l.frequence_jours; return o; });
+        const { error } = await sb.from("equipements").insert(lot);
+        if (error) throw new Error((error.message.startsWith("QUOTA") ? error.message.replace("QUOTA: ", "") : error.message) + (faits ? ` (${faits} déjà importés)` : ""));
+        faits += lot.length;
+      }
+      modal(""); await loadAll(); renderParc(); toast(`${faits} équipement(s) importé(s)${manquants.length ? ` · ${manquants.length} site(s) créé(s)` : ""} · QR prêts à imprimer`);
+    } catch (e) { toast(e.message); await loadAll(); b.disabled = false; b.textContent = "Réessayer"; }
+  };
 }
 
 function renderLabels() {
@@ -811,7 +1030,7 @@ function panneauEnvoi(c) {
       <button class="btn btn-ghost btn-sm" id="envCp">Copier le lien</button>
       <a class="btn btn-ghost btn-sm" id="envVoir" target="_blank" rel="noopener" href="${rapportUrl(c, moisEnvoi)}">Aperçu client</a>
     </div>
-    <p class="m" style="margin-top:8px">Destinataires : ${c.email ? "✉️ " + esc(c.email) : "e-mail non renseigné"} · ${c.whatsapp ? "💬 " + esc(c.whatsapp) : "WhatsApp non renseigné"} · <a href="javascript:void 0" id="envEdit">modifier</a></p>
+    <p class="m" style="margin-top:8px">${c.rapport_auto ? `🔁 Envoi automatique : <b>rapport ${TYPES_PERIODE[c.rapport_auto].toLowerCase()}</b> par e-mail le 1er du mois${peutRelancer() ? "" : " (abonnement requis)"} · ` : "🔁 Envoi automatique désactivé · "}Destinataires : ${c.email ? "✉️ " + esc(c.email) : "e-mail non renseigné"} · ${c.whatsapp ? "💬 " + esc(c.whatsapp) : "WhatsApp non renseigné"} · <a href="javascript:void 0" id="envEdit">modifier</a></p>
     <div style="margin-top:12px"><b style="font-size:14px">Historique des envois</b>${hist.length ? `<table class="tbl" style="margin-top:6px"><tr><th>Date</th><th>Rapport</th><th>Période</th><th>Canal</th><th>Destinataire</th><th>Envoyé par</th></tr>${hist.slice(0, 12).map(r => `<tr><td class="mono">${fr(r.created_at)}</td><td>${typeDe(r.mois)}</td><td>${libMois(r.mois)}</td><td>${r.canal === "email" ? "✉️ E-mail" : "💬 WhatsApp"}</td><td>${esc(r.destinataire)}</td><td>${esc(r.envoye_par_nom)}</td></tr>`).join("")}</table>` : `<p class="m">Aucun rapport envoyé à ce ${W().client} pour l'instant.</p>`}</div></div>`;
 }
 async function journaliserEnvoi(c, canal, destinataire) {
@@ -1112,7 +1331,7 @@ function renderOTDetail(id) {
       </tbody></table>
       ${o.description ? `<p style="margin-top:12px"><b>Description</b><br>${esc(o.description)}</p>` : ""}
       ${o.compte_rendu ? `<p style="margin-top:12px"><b>Compte rendu</b><br>${esc(o.compte_rendu)}</p>` : ""}
-      ${(() => { const it = S.ints.find(i => i.id === o.intervention_id); return it ? photosHTML(it.photos, it) : ""; })()}
+      ${(() => { const it = S.ints.find(i => i.id === o.intervention_id); return (it ? controlesHTML(it.controles) + photosHTML(it.photos, it) : "") + signatureHTML(o.signature || it?.signature); })()}
     </div>
     <div id="otAction"></div>
   </div><div>
@@ -1160,7 +1379,8 @@ function formTerminer(o) {
   const heures = o.date_debut ? Math.max(0.5, Math.round((Date.now() - Date.parse(o.date_debut)) / 36e5 * 2) / 2) : "";
   const ligneP = () => `<div class="pl" style="display:grid;grid-template-columns:1fr 90px 32px;gap:6px;margin-bottom:6px"><select class="field" name="piece">${`<option value="">— Pièce —</option>` + S.pieces.map(p => `<option value="${p.id}">${esc(p.designation)} (stock ${p.stock} ${p.unite})</option>`).join("")}</select><input class="field" name="qte" type="number" step="0.01" min="0" placeholder="Qté"><button type="button" class="btn btn-ghost btn-sm" data-rm>✕</button></div>`;
   document.getElementById("otAction").innerHTML = `<div class="panel" style="border:2px solid var(--heat)"><h3>Terminer l'intervention</h3><form class="form" id="fEnd">
-    <label class="full">Compte rendu (travaux réalisés, constats)<textarea class="field" name="compte_rendu" rows="3" required placeholder="Ex. Filtres nettoyés, condensateur ventilateur remplacé, essais OK."></textarea></label>
+    ${e ? controlesChampHTML(e.type) : ""}
+    <label class="full">Compte rendu (travaux réalisés, constats) ${micHTML("#crEnd")}<textarea class="field" name="compte_rendu" id="crEnd" rows="3" required placeholder="Ex. Filtres nettoyés, condensateur ventilateur remplacé, essais OK."></textarea></label>
     ${e ? `<label>HP (bar)<input class="field mono" name="hp" inputmode="decimal"></label><label>BP (bar)<input class="field mono" name="bp" inputmode="decimal"></label>
     <label>Intensité (A)<input class="field mono" name="intensite" inputmode="decimal"></label><label>T soufflage (°C)<input class="field mono" name="t_soufflage" inputmode="decimal"></label>
     <label>T reprise (°C)<input class="field mono" name="t_reprise" inputmode="decimal"></label>` : ""}
@@ -1168,18 +1388,20 @@ function formTerminer(o) {
     <label>Coût main d'œuvre (FCFA)<input class="field" name="cout_main_oeuvre" type="number" min="0" step="500" value="0"></label>
     <div class="full"><b style="font-size:14px">Pièces utilisées</b> <span class="m">(décomptées automatiquement du stock)</span><div id="pls" style="margin-top:6px">${S.pieces.length ? ligneP() : `<p class="m">Aucune pièce en stock. <a href="#stock">Ajouter des pièces</a></p>`}</div>${S.pieces.length ? `<button type="button" class="btn btn-ghost btn-sm" id="addP">+ Ajouter une pièce</button>` : ""}</div>
     ${e ? photosChampHTML() : ""}
+    ${signatureChampHTML(client(o.client_id).contact || "")}
     <div class="full"><button class="btn btn-hot" type="submit">Clôturer l'OT</button></div></form></div>`;
   const pls = document.getElementById("pls");
   if (document.getElementById("addP")) document.getElementById("addP").onclick = () => pls.insertAdjacentHTML("beforeend", ligneP());
   pls.onclick = ev => { if (ev.target.matches("[data-rm]")) ev.target.closest(".pl").remove(); };
   document.getElementById("otAction").scrollIntoView({ behavior: "smooth" });
   const envoyerPhotos = brancherPhotos(document.getElementById("fEnd"), e?.id);
+  const lireCtl = brancherControles(document.getElementById("fEnd")), envoyerSig = brancherSignature(document.getElementById("fEnd"));
   document.getElementById("fEnd").onsubmit = async ev => {
     ev.preventDefault(); const b = ev.target.querySelector("button[type=submit]"); b.disabled = true;
     const f = Object.fromEntries(new FormData(ev.target)), num = k => f[k] === "" || f[k] == null ? null : Number(String(f[k]).replace(",", "."));
     try {
       // 0. Photos des pièces (téléversées en premier : rien n'est enregistré si l'envoi échoue)
-      const photos = e ? await envoyerPhotos() : [];
+      const photos = e ? await envoyerPhotos() : [], controles = lireCtl(), signature = await envoyerSig();
       // 1. Pièces consommées
       const lignes = [...pls.querySelectorAll(".pl")].map(l => ({ piece_id: l.querySelector("[name=piece]").value, quantite: Number(l.querySelector("[name=qte]").value) })).filter(l => l.piece_id && l.quantite > 0);
       if (lignes.length) {
@@ -1189,11 +1411,11 @@ function formTerminer(o) {
       // 2. Historique de l'équipement (carnet QR), avec les photos des pièces
       let intervention_id = null;
       if (e) {
-        const { data, error } = await sb.from("interventions").insert({ ...(photos.length ? { photos } : {}), equipement_id: e.id, date: iso(TODAY), type: ["preventif", "inspection"].includes(o.type) ? "preventif" : "curatif", observations: `${otNum(o)} — ${f.compte_rendu}`, hp: num("hp"), bp: num("bp"), intensite: num("intensite"), t_soufflage: num("t_soufflage"), t_reprise: num("t_reprise") }).select().single();
+        const { data, error } = await sb.from("interventions").insert({ ...(photos.length ? { photos } : {}), ...(controles.length ? { controles } : {}), ...(signature ? { signature } : {}), equipement_id: e.id, date: iso(TODAY), type: ["preventif", "inspection"].includes(o.type) ? "preventif" : "curatif", observations: `${otNum(o)} — ${f.compte_rendu}`, hp: num("hp"), bp: num("bp"), intensite: num("intensite"), t_soufflage: num("t_soufflage"), t_reprise: num("t_reprise") }).select().single();
         if (error) throw error; intervention_id = data.id;
       }
       // 3. Clôture de l'OT (+ signalement résolu)
-      const { error } = await sb.from("ordres_travail").update({ statut: "termine", date_fin: new Date().toISOString(), compte_rendu: f.compte_rendu, duree_heures: num("duree_heures"), cout_main_oeuvre: num("cout_main_oeuvre") || 0, intervention_id, date_debut: o.date_debut || new Date().toISOString() }).eq("id", o.id);
+      const { error } = await sb.from("ordres_travail").update({ ...(signature ? { signature } : {}), statut: "termine", date_fin: new Date().toISOString(), compte_rendu: f.compte_rendu, duree_heures: num("duree_heures"), cout_main_oeuvre: num("cout_main_oeuvre") || 0, intervention_id, date_debut: o.date_debut || new Date().toISOString() }).eq("id", o.id);
       if (error) throw error;
       if (o.signalement_id) await sb.from("signalements").update({ statut: "resolu", resolu_at: new Date().toISOString() }).eq("id", o.signalement_id);
       await loadAll(); renderOTDetail(o.id); toast(`${otNum(o)} terminé${e ? " · carnet de l'équipement mis à jour" : ""}`);
@@ -1234,7 +1456,8 @@ function renderBon(id) {
   <h3 style="font-size:16px;margin-top:18px">Pièces utilisées</h3><table><tr><th>Désignation</th><th>Quantité</th><th>Prix unitaire</th><th>Montant</th></tr>
   ${conso.map(x => { const p = S.pieces.find(pp => pp.id === x.piece_id) || {}; return `<tr><td>${esc(p.designation || "")}</td><td>${x.quantite} ${p.unite || ""}</td><td>${fcfa2(x.prix_unitaire)}</td><td>${fcfa2(x.quantite * x.prix_unitaire)}</td></tr>`; }).join("") || `<tr><td colspan="4" style="height:60px"></td></tr>`}</table>
   <p style="margin-top:10px;font-size:14px">Durée : ${o.duree_heures ?? "……"} h · Main d'œuvre : ${fcfa2(o.cout_main_oeuvre)} · Pièces : ${fcfa2(coutPieces(o))} · <b>Total : ${fcfa2((o.cout_main_oeuvre || 0) + coutPieces(o))}</b></p>
-  <div class="sig"><div>L'intervenant<br><b style="color:var(--ink)">${esc(o.intervenant || "")}</b></div><div>Le responsable du ${W().client}<br><b style="color:var(--ink)">${esc(c.contact || "")}</b></div></div>
+  ${(() => { const it = S.ints.find(i => i.id === o.intervention_id); return it?.controles?.length ? `<h3 style="font-size:16px;margin-top:18px">Points de contrôle</h3>${controlesHTML(it.controles)}` : ""; })()}
+  <div class="sig"><div>L'intervenant<br><b style="color:var(--ink)">${esc(o.intervenant || "")}</b></div><div>Le responsable du ${W().client}<br><b style="color:var(--ink)">${esc((o.signature || S.ints.find(i => i.id === o.intervention_id)?.signature)?.nom || c.contact || "")}</b>${signatureHTML(o.signature || S.ints.find(i => i.id === o.intervention_id)?.signature)}</div></div>
   <p class="m" style="margin-top:16px">Généré par FroidPass</p></div>`;
 }
 
@@ -1468,6 +1691,19 @@ function optsAssign(sel) {
   for (const m of S.membres || []) opts.push(`<option value="${m.user_id}" ${sel === m.user_id ? "selected" : ""}>${esc(m.nom || "Membre")} · ${m.role === "admin" ? "responsable" : "technicien"}</option>`);
   return opts.join("");
 }
+// Barre de navigation en bas de l'écran sur téléphone (5 boutons) ; « Plus » ouvre les autres rubriques
+function majBarreBas(h) {
+  const bas = document.getElementById("bas"); if (!bas) return;
+  bas.hidden = false; document.body.classList.add("avec-bas");
+  const v = h.split("-")[0];
+  bas.querySelectorAll("[data-b]").forEach(a => a.classList.toggle("cur", a.dataset.b === v || (a.dataset.b === "parc" && v === "eq")));
+  document.getElementById("basOt").textContent = isAdmin() ? "Travaux" : "Mes tâches";
+  document.getElementById("basPlus").onclick = () => {
+    const liens = [...document.querySelectorAll("#menu a")].filter(a => !a.hidden && !["tableau", "ot", "scan", "parc"].includes(a.dataset.v));
+    modal(`<div class="panel plus-sheet"><h3>Menu</h3>${liens.map(a => `<a class="row" href="${a.getAttribute("href")}" data-closeplus>${esc(a.textContent)}</a>`).join("")}<button class="btn btn-ghost" data-close style="margin-top:8px;width:100%">Fermer</button></div>`);
+    document.querySelectorAll("[data-closeplus]").forEach(x => x.onclick = () => modal(""));
+  };
+}
 function majMenuRole() {
   const menu = document.getElementById("menu"); if (!menu) return;
   const set = (v, txt, show = true) => { const a = menu.querySelector(`a[data-v="${v}"]`); if (a) { if (txt) a.textContent = txt; a.hidden = !show; } };
@@ -1526,7 +1762,7 @@ function renderEquipe() {
   document.getElementById("fInv").onsubmit = async ev => {
     ev.preventDefault(); const o = Object.fromEntries(new FormData(ev.target)); o.email = o.email.trim().toLowerCase();
     const { error } = await sb.from("invitations").insert(o);
-    if (error) return toast(error.message.includes("duplicate") ? "Cette personne est déjà invitée" : error.message);
+    if (error) return toast(error.message.includes("duplicate") ? "Cette personne est déjà invitée" : error.message.replace("QUOTA: ", ""));
     await loadAll(); renderEquipe(); toast("Invitation créée");
     if (o.telephone) modal(`<div class="panel"><h3>Prévenir ${esc(o.nom)}</h3><div class="msgbox">${esc(msgInvitation(o, lien))}</div><a class="btn btn-teal btn-sm" target="_blank" rel="noopener" href="https://wa.me/${waNum(o.telephone)}?text=${encodeURIComponent(msgInvitation(o, lien))}">Envoyer sur WhatsApp</a> <button class="btn btn-ghost btn-sm" data-close>Fermer</button></div>`);
   };

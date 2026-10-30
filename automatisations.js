@@ -1,3 +1,4 @@
+import { envoyerEmailRapport } from "./rapports.js";
 // =====================================================================
 // FroidPass — automatisations quotidiennes (Cloudflare Cron, chaque matin 7 h, heure du Bénin)
 //
@@ -8,6 +9,8 @@
 //     - abonnement qui expire dans 7 jours, puis 1 jour
 //     - abonnement expiré (la veille)
 //     - chaque lundi : liste des entretiens à faire dans les 7 jours
+//     - chaque lundi : alerte « stock bas » au responsable
+//  3. Le 1er du mois : rapports automatiques aux clients (mensuel, et trimestriel / semestriel / annuel en début de période)
 //  Chaque e-mail n'est envoyé qu'une fois (table notifications_envoyees).
 //
 // Variables (Cloudflare > Worker > Paramètres > Variables et secrets) :
@@ -178,6 +181,44 @@ export async function runAutomatisations(env, { dryRun = false } = {}) {
     if (!mes.length) continue;
     const lignes = mes.map(o => `<tr><td style="padding:6px;border-bottom:1px solid #e3eef0">OT-${String(o.numero).padStart(4, "0")}</td><td style="padding:6px;border-bottom:1px solid #e3eef0">${esc(o.titre)}</td><td style="padding:6px;border-bottom:1px solid #e3eef0">${fr(o.date_prevue)}</td></tr>`).join("");
     await send({ id: m.user_id, nom: m.nom }, "hebdo_ot", isoDay(today), `${mes.length} intervention(s) à réaliser cette semaine`, gabarit(env, `Bonjour ${esc((m.nom || "").split(" ")[0])}, votre semaine`, `<table style="width:100%;border-collapse:collapse;font-size:14px">${lignes}</table>`, "Ouvrir mon espace", APP));
+  }
+
+  // ---------- Lundi : stock bas (pièces sous le seuil d'alerte) ----------
+  if (isMonday) {
+    let pieces = []; try { pieces = await rest(env, "pieces?select=technicien_id,designation,reference,stock,stock_min,unite&stock_min=gt.0"); } catch {}
+    for (const t of techs) {
+      const bas = pieces.filter(p => p.technicien_id === t.id && Number(p.stock) <= Number(p.stock_min));
+      if (!bas.length) continue;
+      const lignes = bas.map(p => `<tr><td style="padding:6px;border-bottom:1px solid #e3eef0">${esc(p.designation)} ${p.reference ? "<span style='color:#7a929e'>(" + esc(p.reference) + ")</span>" : ""}</td><td style="padding:6px;border-bottom:1px solid #e3eef0;color:#d64545"><b>${p.stock} ${esc(p.unite || "")}</b> / seuil ${p.stock_min}</td></tr>`).join("");
+      await send(t, "stock_bas", isoDay(today), `⚠ ${bas.length} pièce(s) sous le seuil d'alerte`, gabarit(env, "Stock à réapprovisionner",
+        `<p>Ces pièces sont au niveau ou en dessous du seuil d'alerte. Prévoyez la commande pour ne pas bloquer les interventions.</p><table style="width:100%;border-collapse:collapse;font-size:14px">${lignes}</table>`, "Voir le stock", APP + "#stock"));
+    }
+  }
+
+  // ---------- Le 1er du mois : rapports automatiques aux clients ----------
+  if (_d.getUTCDate() === 1 && env.BREVO_API_KEY && env.EMAIL_EXPEDITEUR) {
+    const y = _d.getUTCFullYear(), m = _d.getUTCMonth(); // mois en cours (0-11) ; on envoie la période qui vient de se terminer
+    const prec = new Date(Date.UTC(y, m - 1, 1)), py = prec.getUTCFullYear(), pm = prec.getUTCMonth();
+    const aEnvoyer = { mensuel: `${py}-${String(pm + 1).padStart(2, "0")}` };
+    if (m % 3 === 0) aEnvoyer.trimestriel = `${py}-T${Math.floor(pm / 3) + 1}`;
+    if (m % 6 === 0) aEnvoyer.semestriel = `${py}-S${pm < 6 ? 1 : 2}`;
+    if (m === 0) aEnvoyer.annuel = String(py);
+    let clientsAuto = [];
+    try { clientsAuto = await rest(env, "clients?select=id,nom,contact,email,code_rapport,technicien_id,rapport_auto&rapport_auto=not.is.null&email=neq."); } catch {}
+    for (const c of clientsAuto) {
+      const mois = aEnvoyer[c.rapport_auto]; if (!mois) continue;
+      if (!actifs.some(t => t.id === c.technicien_id)) continue; // réservé aux abonnés actifs
+      const deja = await rest(env, `rapports_envoyes?client_id=eq.${c.id}&mois=eq.${mois}&canal=eq.email&select=id`).catch(() => []);
+      if (deja.length) continue;
+      if (dryRun) { log.emails.push(`rapport_${c.rapport_auto} ${mois} → ${c.email}`); continue; }
+      try {
+        const t = techs.find(x => x.id === c.technicien_id) || {};
+        const res = await envoyerEmailRapport(env, { c, mois, dest: c.email, signataire: t.nom, replyTo: emails[t.id]?.email, site: SITE });
+        if (res.erreur) throw new Error(res.erreur);
+        await rest(env, "rapports_envoyes", "POST", { technicien_id: c.technicien_id, client_id: c.id, mois, canal: "email", destinataire: c.email, envoye_par_nom: "Envoi automatique" }, "return=minimal");
+        log.emails.push(`rapport_${c.rapport_auto} ${mois} → ${c.email}`);
+      } catch (e) { log.erreurs.push(`rapport ${c.nom} : ${e.message}`); }
+    }
   }
 
   // ---------- Rapport au fondateur ----------

@@ -518,6 +518,11 @@ create policy inv_all on public.invitations for all
 grant select, insert, update, delete on public.membres, public.invitations to authenticated;
 revoke insert on public.membres from authenticated;  -- les membres sont créés uniquement par accepter_invitation()
 
+-- controles : [{ "point": "Filtres", "etat": "ok|anomalie|na" }]
+alter table public.interventions add column if not exists controles jsonb not null default '[]'::jsonb;
+-- signature : { "path": "<org>/signatures/<uuid>.png", "nom": "M. Dossou", "date": "..." }
+alter table public.interventions add column if not exists signature jsonb;
+
 -- Photos des interventions (la colonne est aussi créée par mise-a-jour-photos.sql)
 alter table public.interventions add column if not exists photos jsonb not null default '[]'::jsonb;
 
@@ -581,7 +586,7 @@ begin
         'signalements', (select count(*) from public.signalements s where s.equipement_id = e.id and s.created_at >= d and s.created_at < f))
       order by e.zone, e.emplacement) from public.equipements e where e.client_id = c.id), '[]'::json),
     'interventions', coalesce((select json_agg(json_build_object(
-        'date', i.date, 'type', i.type, 'equipement_id', e.id, 'equipement', e.emplacement, 'observations', i.observations,
+        'date', i.date, 'type', i.type, 'equipement_id', e.id, 'equipement', e.emplacement, 'controles', i.controles, 'signature', i.signature, 'observations', i.observations,
         'hp', i.hp, 'bp', i.bp, 'intensite', i.intensite, 't_soufflage', i.t_soufflage, 't_reprise', i.t_reprise,
         -- photos : l'analyse IA n'est transmise au client que si le responsable l'a validée
         'photos', (select coalesce(jsonb_agg(case when coalesce((p->'analyse'->>'valide')::boolean, false) then p else p - 'analyse' end), '[]'::jsonb) from jsonb_array_elements(coalesce(i.photos, '[]'::jsonb)) p)) order by i.date)
@@ -646,3 +651,36 @@ drop policy if exists ot_insert on public.ordres_travail; create policy ot_inser
   and (public.est_admin() or (statut = 'demande' and assigne_a is null))
   and (client_id is null or exists (select 1 from public.clients c where c.id = client_id and c.technicien_id = public.mon_org()))
   and (equipement_id is null or exists (select 1 from public.equipements e where e.id = equipement_id and e.technicien_id = public.mon_org())));
+
+-- signature aussi sur l'ordre de travail (OT sans équipement)
+alter table public.ordres_travail add column if not exists signature jsonb;
+
+-- =====================================================================
+-- FroidPass — Limites par offre (membres d'équipe) et envoi automatique des rapports
+-- =====================================================================
+-- Nombre de membres (en plus du titulaire du compte) : Découverte 1 · Solo 1 · Pro 3 · Équipe 15
+create or replace function public.limite_membres(o text) returns int language sql immutable as $$
+  select case o when 'equipe' then 15 when 'pro' then 3 else 1 end
+$$;
+create or replace function public.verifier_quota_membres()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare t public.techniciens; o text; n int; lim int;
+begin
+  select * into t from public.techniciens where id = new.org_id;
+  o := public.offre_active(t); lim := public.limite_membres(o);
+  select (select count(*) from public.membres where org_id = new.org_id)
+       + (select count(*) from public.invitations where org_id = new.org_id and (tg_table_name <> 'invitations' or email <> new.email))
+       - case when tg_table_name = 'membres' then 1 else 0 end   -- l'invitation acceptée devient le membre
+    into n;
+  if n >= lim then
+    raise exception 'QUOTA: votre offre % permet % membre(s) d''équipe en plus du titulaire. Passez à l''offre supérieure.', o, lim;
+  end if;
+  return new;
+end $$;
+drop trigger if exists trg_quota_invitations on public.invitations;
+create trigger trg_quota_invitations before insert on public.invitations for each row execute function public.verifier_quota_membres();
+
+-- Envoi automatique des rapports par e-mail (le 1er du mois) : null = désactivé
+alter table public.clients add column if not exists rapport_auto text;
+alter table public.clients drop constraint if exists clients_rapport_auto_check;
+alter table public.clients add constraint clients_rapport_auto_check check (rapport_auto is null or rapport_auto in ('mensuel','trimestriel','semestriel','annuel'));
