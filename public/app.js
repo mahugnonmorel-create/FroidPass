@@ -31,7 +31,7 @@ const PLANS = [
   { id: "solo_annuel",    nom: "Solo · 12 mois", prix: 100000, detail: "10 mois payés pour 12" },
   { id: "pro_mensuel",    nom: "Pro · 1 mois",   prix: 20000,  detail: "Équipements illimités" },
   { id: "pro_annuel",     nom: "Pro · 12 mois",  prix: 200000, detail: "10 mois payés pour 12" },
-  { id: "equipe_mensuel", nom: "Équipe · 1 mois", prix: 40000, detail: "Illimité, multi-sites, planning général" }
+  { id: "equipe_mensuel", nom: "Équipe · 1 mois", prix: 40000, detail: "Équipe (responsable + techniciens), multi-sites, GMAO complète" }
 ];
 const DAY = 864e5;
 const _n = new Date();
@@ -79,6 +79,8 @@ function offreActive() {
 const peutRelancer = () => offreActive() !== "decouverte";
 // Profil : "technicien" (prestataire qui entretient le parc de ses clients) ou "entreprise" (gère ses propres sites)
 const isEnt = () => S.tech?.profil === "entreprise";
+const isAdmin = () => S.role !== "technicien";
+const nomMembre = uid => (S.membres || []).find(m => m.user_id === uid)?.nom || (uid === S.orgId ? (S.tech?.nom || "Responsable") : "");
 const W = () => isEnt()
   ? { client: "site", clients: "sites", Clients: "Sites", nouveauClient: "Nouveau site", nomClient: "Nom du site", phNom: "Siège, Agence Akpakpa, Usine…", contact: "Responsable du site ou prestataire", waContact: "WhatsApp du responsable / prestataire", relance: "Demander l'intervention (WhatsApp)", signataire: "Le responsable maintenance" }
   : { client: "client", clients: "clients", Clients: "Clients", nouveauClient: "Nouveau client", nomClient: "Nom de l'établissement", phNom: "Hôtel, clinique, restaurant…", contact: "Personne à contacter", waContact: "WhatsApp du client", relance: "Préparer le message WhatsApp", signataire: "Le technicien" };
@@ -86,16 +88,34 @@ function majMenu() { const a = document.querySelector('#menu a[data-v="clients"]
 
 // ---------- Données ----------
 async function loadAll() {
+  // Équipe : accepter une invitation en attente, puis déterminer l'organisation et le rôle
+  if (!S.invChecked) { S.invChecked = true; try { const r = await sb.rpc("accepter_invitation"); if (r.data?.statut === "acceptee") toast("Bienvenue dans l'équipe !"); } catch {} }
+  const mb = await sb.from("membres").select("*");
+  S.membres = mb.error ? [] : mb.data;
+  S.moi = S.membres.find(m => m.user_id === S.user.id) || null;
+  S.role = S.moi ? S.moi.role : "admin";
+  S.orgId = S.moi ? S.moi.org_id : S.user.id;
   const [t, c, e, i, p] = await Promise.all([
-    sb.from("techniciens").select("*").eq("id", S.user.id).single(),
+    sb.from("techniciens").select("*"),
     sb.from("clients").select("*").order("nom"),
     sb.from("equipements").select("*").order("created_at"),
     sb.from("interventions").select("*").order("date", { ascending: false }),
     sb.from("paiements").select("*").order("created_at", { ascending: false })
   ]);
   for (const r of [t, c, e, i, p]) if (r.error) throw r.error;
+  t.data = t.data.find(x => x.id === S.orgId) || t.data.find(x => x.id === S.user.id);
+  S.me = (await sb.from("techniciens").select("*").eq("id", S.user.id).single()).data || t.data;
+  S.invitations = [];
+  if (S.role === "admin") { const iv = await sb.from("invitations").select("*").order("created_at", { ascending: false }); S.invitations = iv.error ? [] : iv.data; }
   const sg = await sb.from("signalements").select("*").order("created_at", { ascending: false });
   S.sigs = sg.error ? [] : sg.data;
+  // Module GMAO (tolérant si la mise à jour SQL n'est pas encore faite)
+  const [o, pc, cs] = await Promise.all([
+    sb.from("ordres_travail").select("*").order("created_at", { ascending: false }),
+    sb.from("pieces").select("*").order("designation"),
+    sb.from("consommations").select("*").order("created_at", { ascending: false })
+  ]);
+  S.gmao = !o.error; S.ots = o.error ? [] : o.data; S.pieces = pc.error ? [] : pc.data; S.consos = cs.error ? [] : cs.data;
   S.tech = t.data; S.clients = c.data; S.eqs = e.data; S.ints = i.data; S.pays = p.data;
 }
 
@@ -106,8 +126,11 @@ async function route() {
   if (!S.user) { document.getElementById("menu").hidden = true; return renderAuth(h.startsWith("inscription") ? "inscription" : "connexion", h === "inscription-entreprise" ? "entreprise" : "technicien"); }
   majMenu();
   document.getElementById("menu").hidden = false;
-  document.querySelectorAll("#menu a").forEach(a => a.classList.toggle("cur", h.startsWith(a.dataset.v) || (h.startsWith("eq-") && a.dataset.v === "parc")));
+  document.querySelectorAll("#menu a").forEach(a => a.classList.toggle("cur", h === a.dataset.v || h.startsWith(a.dataset.v + "-") || (h.startsWith("eq-") && a.dataset.v === "parc") || (["rapport", "siteqr"].some(x => h.startsWith(x)) && a.dataset.v === "clients")));
   window.scrollTo(0, 0);
+  majMenuRole();
+  if (!isAdmin() && ["abonnement", "indicateurs", "rapport-global", "equipe", "stock-edit"].some(x => h.startsWith(x))) { location.hash = "tableau"; return; }
+  if (h === "equipe") return renderEquipe();
   if (h.startsWith("eq-")) return renderEq(h.slice(3));
   if (h.startsWith("cert-")) return renderCert(h.slice(5));
   if (h.startsWith("rapport-")) return renderRapport(h.slice(8));
@@ -115,6 +138,12 @@ async function route() {
   if (h === "etiquettes") return renderLabels();
   if (h === "rapport-global") return renderRapportGlobal();
   if (h === "planning") return renderPlanning();
+  if (h.startsWith("ot-bon-")) return renderBon(h.slice(7));
+  if (h.startsWith("ot-")) return renderOTDetail(h.slice(3));
+  if (h === "ot") return renderOT();
+  if (h === "stock") return renderStock();
+  if (h === "indicateurs") return renderIndicateurs();
+  if (h === "aide") return renderAide();
   if (h === "parc") return renderParc();
   if (h === "clients") return renderClients();
   if (h === "abonnement") return renderAbo();
@@ -171,15 +200,17 @@ function renderAuth(mode, profilInit = "technicien") {
 }
 
 function renderTableau() {
+  if (!isAdmin()) return renderMonEspace();
   const sts = S.eqs.map(status);
   const late = sts.filter(s => s.d < 0).length, soon = sts.filter(s => s.d >= 0 && s.d <= 14).length;
   const relances = [...S.eqs].sort((a, b) => status(a).d - status(b).d).filter(e => status(e).d <= 14);
   const visites = S.eqs.reduce((n, e) => n + Math.round(365 / freq(e)), 0);
   const w = W(), pctParc = S.eqs.length ? Math.round(100 * (S.eqs.length - late) / S.eqs.length) : 0;
   $view.innerHTML = `
-  <h1 style="font-size:30px;margin-bottom:6px">Bonjour ${esc((S.tech.nom || "").split(" ")[0])}</h1>
+  <h1 style="font-size:30px;margin-bottom:6px">Bonjour ${esc(((S.me || S.tech).nom || "").split(" ")[0])}</h1>
   <p class="m" style="margin-bottom:16px">Offre : <b>${labelOffre()}</b>${S.tech.fondateur ? " · Membre fondateur" : ""}</p>
   ${sigsHTML(S.sigs.filter(x => x.statut !== "resolu"), true)}
+  ${(() => { const et = etapesDemarrage(); return et.every(x => x.ok) ? "" : `<div class="panel" style="border:2px solid var(--teal)"><h3>Premiers pas : ${et.filter(x => x.ok).length}/${et.length}</h3><div style="display:flex;gap:8px;flex-wrap:wrap">${et.map((x, k) => `<a href="${x.l}" class="pill ${x.ok ? "p-ok" : ""}" style="text-decoration:none;padding:7px 12px;${x.ok ? "" : "border:1.5px solid var(--line)"}">${x.ok ? "✓" : k + 1 + "."} ${x.t}</a>`).join("")}</div></div>`; })()}
   ${!S.tech.whatsapp || !S.tech.nom ? `<div class="panel" style="border-color:var(--heat)">Complétez votre <a href="#profil">profil</a> (nom, entreprise, WhatsApp) : ces informations apparaissent sur vos carnets QR et vos certificats.</div>` : ""}
   <div class="kpis">
     <div class="kpi"><b>${S.clients.length}</b><span>${w.clients}</span></div>
@@ -271,11 +302,11 @@ function renderEq(id) {
           <a class="btn btn-ghost btn-sm" href="#cert-${e.id}">Certificat d'entretien</a>
           <a class="btn btn-ghost btn-sm" href="/depannage?marque=${encodeURIComponent(["Gree","LG","Samsung","Daikin","Midea"].find(m => (e.marque || "").toLowerCase().includes(m.toLowerCase())) || "*")}">Dépannage / codes erreur</a>
           <button class="btn btn-teal btn-sm" data-relance="${e.id}">Relance WhatsApp</button>
-          <button class="btn btn-ghost btn-sm" id="delEq" style="color:var(--bad)">Supprimer</button></div></div></div>
+          ${isAdmin() ? `<button class="btn btn-ghost btn-sm" id="delEq" style="color:var(--bad)">Supprimer</button>` : ""}</div></div></div>
       ${sigsHTML(S.sigs.filter(x => x.equipement_id === e.id && x.statut !== "resolu"))}
       <div class="panel"><h3>Historique</h3><div class="hist">${list.length ? list.map(x => `
         <div class="it"><b class="mono" style="font-size:13.5px">${fr(x.date)}</b> · <b>${x.type === "preventif" ? "Préventif" : "Curatif"}</b>
-          <button class="btn btn-sm noprint" style="padding:0 6px;color:var(--mute);background:none" data-delint="${x.id}" title="Supprimer">✕</button>
+          <button class="btn btn-sm noprint" style="padding:0 6px;color:var(--mute);background:none" data-delint="${x.id}" title="Supprimer" ${isAdmin() ? "" : "hidden"}>✕</button>
           <div class="m">${esc(x.observations)}</div>${measHTML(x)}${flags(x).map(f => `<div class="flag">⚠ ${f}</div>`).join("")}</div>`).join("")
         : `<p class="empty">Aucune intervention.</p>`}</div></div>
     </div>
@@ -291,7 +322,7 @@ function renderEq(id) {
     if (error) { toast(error.message); b.disabled = false; return; }
     await loadAll(); renderEq(e.id); toast("Intervention enregistrée · prochain entretien recalculé");
   };
-  document.getElementById("delEq").onclick = () => confirmBox(`Supprimer « ${esc(e.emplacement)} » et tout son historique ?`, async () => {
+  if (document.getElementById("delEq")) document.getElementById("delEq").onclick = () => confirmBox(`Supprimer « ${esc(e.emplacement)} » et tout son historique ?`, async () => {
     const { error } = await sb.from("equipements").delete().eq("id", e.id);
     if (error) return toast(error.message);
     await loadAll(); location.hash = "parc"; toast("Équipement supprimé");
@@ -369,9 +400,9 @@ function renderClients() {
   <div class="grid2"><div class="panel">${S.clients.map(c => {
     const n = S.eqs.filter(e => e.client_id === c.id).length, st = statsSite(c);
     return `<div class="row" style="cursor:default"><div class="ic">🏢</div><div><div class="t">${esc(c.nom)} ${st.pct == null ? "" : `<span class="pill ${st.pct >= 90 ? "p-ok" : st.pct >= 70 ? "p-warn" : "p-bad"}">${st.pct} % à jour</span>`}${st.late ? ` <span class="pill p-bad">${st.late} en retard</span>` : ""}</div><div class="m">${esc(c.contact)} · ${esc(c.whatsapp)} · ${n} équipement(s) · prochain entretien ${fr(st.prochain)}</div></div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end"><a class="btn btn-teal btn-sm" href="#rapport-${c.id}">Rapport du site</a><a class="btn btn-ghost btn-sm" href="#siteqr-${c.id}">QR du site</a><button class="btn btn-ghost btn-sm" data-delcli="${c.id}" style="color:var(--bad)">Supprimer</button></div></div>`;
+      <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end"><a class="btn btn-teal btn-sm" href="#rapport-${c.id}">Rapport du site</a><a class="btn btn-ghost btn-sm" href="#siteqr-${c.id}">QR du site</a>${isAdmin() ? `<button class="btn btn-ghost btn-sm" data-delcli="${c.id}" style="color:var(--bad)">Supprimer</button>` : ""}</div></div>`;
   }).join("") || `<p class="empty">Aucun ${W().client} pour l'instant.</p>`}</div>
-  <div class="panel"><h3>${W().nouveauClient}</h3><form class="form" id="cliForm" style="grid-template-columns:1fr">
+  <div class="panel" ${isAdmin() ? "" : "hidden"}><h3>${W().nouveauClient}</h3><form class="form" id="cliForm" style="grid-template-columns:1fr">
     <label>${W().nomClient}<input class="field" name="nom" placeholder="${W().phNom}" required></label>
     <label>${W().contact}<input class="field" name="contact" placeholder="M. / Mme …"></label>
     <label>${W().waContact}<input class="field" name="whatsapp" placeholder="+229 01 XX XX XX XX"></label>
@@ -430,15 +461,16 @@ async function verifierRetourPaiement() {
 }
 
 function renderProfil() {
-  const t = S.tech;
+  const t = S.me || S.tech;
   $view.innerHTML = `<h1 style="font-size:28px;margin-bottom:14px">Profil</h1>
-  <div class="grid2"><div class="panel"><h3>Vos informations (affichées sur vos carnets et certificats)</h3>
+  ${isAdmin() ? `<div class="panel" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><b style="margin-right:auto">Organisation : ${esc(S.tech.entreprise || S.tech.nom)} · offre ${labelOffre()}</b><a class="btn btn-teal btn-sm" href="#abonnement">Abonnement</a><a class="btn btn-ghost btn-sm" href="#equipe">Équipe</a></div>` : `<div class="panel"><b>Membre de l'équipe ${esc(S.tech.entreprise || S.tech.nom)}</b> · rôle : technicien</div>`}
+  <div class="grid2"><div class="panel"><h3>Vos informations${isAdmin() ? " (affichées sur vos carnets et certificats)" : ""}</h3>
     <form class="form" id="pf">
       <label>Nom complet<input class="field" name="nom" value="${esc(t.nom)}" required></label>
       <label>Entreprise<input class="field" name="entreprise" value="${esc(t.entreprise)}"></label>
       <label>WhatsApp<input class="field" name="whatsapp" value="${esc(t.whatsapp)}"></label>
       <label>Ville<input class="field" name="ville" value="${esc(t.ville)}"></label>
-      <label class="full">Type de compte<select class="field" name="profil"><option value="technicien" ${t.profil !== "entreprise" ? "selected" : ""}>Technicien / prestataire de maintenance</option><option value="entreprise" ${t.profil === "entreprise" ? "selected" : ""}>Chef d'entreprise / gestionnaire de sites</option></select></label>
+      ${isAdmin() ? `<label class="full">Type de compte<select class="field" name="profil"><option value="technicien" ${t.profil !== "entreprise" ? "selected" : ""}>Technicien / prestataire de maintenance</option><option value="entreprise" ${t.profil === "entreprise" ? "selected" : ""}>Chef d'entreprise / gestionnaire de sites</option></select></label>` : ""}
       <div class="full"><button class="btn btn-hot" type="submit">Enregistrer</button></div></form></div>
   <div class="panel"><h3>Compte</h3><p class="m">${esc(S.user.email)}</p>
     <form class="form" id="pw" style="grid-template-columns:1fr;margin-top:10px"><label>Nouveau mot de passe<input class="field" type="password" name="password" minlength="8" autocomplete="new-password"></label><button class="btn btn-ghost btn-sm" type="submit">Changer le mot de passe</button></form>
@@ -737,4 +769,433 @@ function renderPlanning() {
     const csv = "﻿" + rows.map(r => r.map(v => `"${String(v ?? "").replace(/"/g, '""')}"`).join(";")).join("\n");
     const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" })); a.download = `planning-preventif-${iso(TODAY)}.csv`; a.click();
   };
+}
+
+// =====================================================================
+// GMAO — ORDRES DE TRAVAIL (OT)
+// Circuit : Demande → Planifié → En cours → Terminé (ou Annulé)
+// =====================================================================
+const OT_TYPES = { preventif: "Préventif", curatif: "Curatif (panne)", inspection: "Inspection", amelioration: "Amélioration" };
+const PRIO = { basse: { l: "Basse", c: "" }, normale: { l: "Normale", c: "p-ok" }, haute: { l: "Haute", c: "p-warn" }, urgente: { l: "Urgente", c: "p-bad" } };
+const STATUTS = { demande: "Demande", planifie: "Planifié", en_cours: "En cours", termine: "Terminé", annule: "Annulé" };
+const otNum = o => "OT-" + String(o.numero || 0).padStart(4, "0");
+const eqById = id => S.eqs.find(e => e.id === id);
+const fcfa2 = n => Number(n || 0).toLocaleString("fr-FR").replace(/ | /g, " ") + " FCFA";
+const coutPieces = o => (S.consos || []).filter(c => c.ordre_id === o.id).reduce((t, c) => t + c.quantite * c.prix_unitaire, 0);
+const otEnRetard = o => ["demande", "planifie"].includes(o.statut) && o.date_prevue && Date.parse(o.date_prevue) < TODAY;
+function besoinMaj(nom) {
+  $view.innerHTML = `<div class="panel"><h3>Activer le module ${nom}</h3><p class="m">Exécutez une fois le fichier <span class="mono">supabase/mise-a-jour-gmao.sql</span> dans Supabase (SQL Editor → Run), puis rechargez la page.</p></div>`;
+}
+
+function carteOT(o) {
+  const e = eqById(o.equipement_id);
+  return `<a href="#ot-${o.id}" class="panel" style="display:block;text-decoration:none;padding:12px 14px;margin-bottom:8px;${otEnRetard(o) ? "border-color:var(--bad)" : ""}">
+    <div style="display:flex;justify-content:space-between;gap:6px"><span class="mono m">${otNum(o)}</span><span class="pill ${PRIO[o.priorite].c}">${PRIO[o.priorite].l}</span></div>
+    <div class="t" style="margin:4px 0 2px">${esc(o.titre)}</div>
+    <div class="m">${esc(client(o.client_id).nom || "")}${e ? " · " + esc(e.emplacement) : ""}</div>
+    <div class="m" style="margin-top:4px">${OT_TYPES[o.type]}${o.date_prevue ? ` · <span style="color:${otEnRetard(o) ? "var(--bad)" : "inherit"}">${fr(o.date_prevue)}</span>` : ""}${o.assigne_a ? " · 👤 " + esc(nomMembre(o.assigne_a) || o.intervenant) : o.intervenant ? " · " + esc(o.intervenant) : ""}</div></a>`;
+}
+
+let OTF = { q: "", site: "" };
+function renderOT() {
+  if (!S.gmao) return besoinMaj("Travaux");
+  const filt = S.ots.filter(o => (!OTF.site || o.client_id === OTF.site) && (!OTF.q || (o.titre + otNum(o) + (eqById(o.equipement_id)?.emplacement || "") + o.intervenant).toLowerCase().includes(OTF.q.toLowerCase())));
+  const col = (st, titre, aide) => {
+    let l = filt.filter(o => o.statut === st);
+    if (st === "termine") l = l.filter(o => Date.parse(o.date_fin || o.created_at) > TODAY - 30 * DAY);
+    l.sort((a, b) => (otEnRetard(b) - otEnRetard(a)) || (["urgente", "haute", "normale", "basse"].indexOf(a.priorite) - ["urgente", "haute", "normale", "basse"].indexOf(b.priorite)) || String(a.date_prevue || "9").localeCompare(String(b.date_prevue || "9")));
+    return `<div style="background:var(--ice);border-radius:14px;padding:12px;min-width:0"><div style="display:flex;justify-content:space-between;margin-bottom:4px"><b>${titre}</b><span class="m">${l.length}</span></div><p class="m" style="font-size:12px;margin-bottom:8px">${aide}</p>${l.map(carteOT).join("") || `<p class="empty" style="padding:6px">—</p>`}</div>`;
+  };
+  const retard = S.ots.filter(otEnRetard).length;
+  $view.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:end;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+      <div><h1 style="font-size:28px">${isAdmin() ? "Travaux (ordres de travail)" : "Mes travaux"}</h1><p class="m">Chaque intervention suit 4 étapes : demande, planification, réalisation, clôture.${retard ? ` <b style="color:var(--bad)">${retard} OT en retard.</b>` : ""}</p></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">${isAdmin() ? `<button class="btn btn-ghost btn-sm" id="genOT">Générer les OT préventifs (30 j)</button>` : ""}<button class="btn btn-hot btn-sm" id="newOT">${isAdmin() ? "+ Nouvel OT" : "+ Signaler un besoin"}</button></div></div>
+    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap"><input class="field" id="otq" placeholder="Rechercher (titre, n°, équipement, intervenant)" style="max-width:340px" value="${esc(OTF.q)}">
+      <select class="field" id="ots" style="width:auto"><option value="">Tous les ${W().clients}</option>${S.clients.map(c => `<option value="${c.id}" ${OTF.site === c.id ? "selected" : ""}>${esc(c.nom)}</option>`).join("")}</select></div>
+    <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px" class="kanban">
+      ${col("demande", "1. Demandes", "À planifier : pannes signalées, besoins")}${col("planifie", "2. Planifiés", "Date et intervenant fixés")}${col("en_cours", "3. En cours", "Intervention démarrée")}${col("termine", "4. Terminés", "30 derniers jours")}
+    </div>
+    <style>@media(max-width:900px){.kanban{grid-template-columns:1fr 1fr!important}}@media(max-width:560px){.kanban{grid-template-columns:1fr!important}}</style>`;
+  document.getElementById("newOT").onclick = () => openOTForm({});
+  if (document.getElementById("genOT")) document.getElementById("genOT").onclick = genererOTPreventifs;
+  const q = document.getElementById("otq"); q.oninput = () => { OTF.q = q.value; const pos = q.selectionStart; renderOT(); const n = document.getElementById("otq"); n.focus(); n.setSelectionRange(pos, pos); };
+  document.getElementById("ots").onchange = ev => { OTF.site = ev.target.value; renderOT(); };
+}
+
+function openOTForm(pre) {
+  if (!S.gmao) return besoinMaj("Travaux");
+  if (!S.clients.length) { location.hash = "clients"; toast(`Créez d'abord un ${W().client}`); return; }
+  const cid = pre.client_id || (pre.equipement_id ? eqById(pre.equipement_id)?.client_id : "") || S.clients[0].id;
+  const eqOpts = c => `<option value="">— Aucun équipement précis —</option>` + S.eqs.filter(e => e.client_id === c).map(e => `<option value="${e.id}" ${pre.equipement_id === e.id ? "selected" : ""}>${esc(e.emplacement)}${e.zone ? " · " + esc(e.zone) : ""}</option>`).join("");
+  modal(`<div class="panel"><h3>Nouvel ordre de travail</h3><form class="form" id="otForm">
+    <label>${W().Clients.slice(0, -1)}<select class="field" name="client_id" id="otCli">${S.clients.map(c => `<option value="${c.id}" ${c.id === cid ? "selected" : ""}>${esc(c.nom)}</option>`).join("")}</select></label>
+    <label>Équipement<select class="field" name="equipement_id" id="otEq">${eqOpts(cid)}</select></label>
+    <label class="full">Titre<input class="field" name="titre" required maxlength="200" value="${esc(pre.titre || "")}" placeholder="Ex. Ne refroidit plus, entretien trimestriel…"></label>
+    <label>Type<select class="field" name="type">${Object.entries(OT_TYPES).map(([k, v]) => `<option value="${k}" ${(pre.type || "curatif") === k ? "selected" : ""}>${v}</option>`).join("")}</select></label>
+    <label>Priorité<select class="field" name="priorite">${Object.entries(PRIO).map(([k, v]) => `<option value="${k}" ${(pre.priorite || "normale") === k ? "selected" : ""}>${v.l}</option>`).join("")}</select></label>
+    <label class="full">Description<textarea class="field" name="description" rows="2">${esc(pre.description || "")}</textarea></label>
+    ${isAdmin() ? `<label>Date prévue (facultatif)<input class="field" type="date" name="date_prevue" value="${pre.date_prevue || ""}"></label>
+    <label>Assigner à<select class="field" name="assigne_a">${optsAssign(pre.assigne_a)}</select></label>
+    <label>Intervenant externe (facultatif)<input class="field" name="intervenant" value="${esc(pre.intervenant || "")}" placeholder="Prestataire, sous-traitant…"></label>
+    <label>Téléphone de l'intervenant<input class="field" name="intervenant_tel" placeholder="+229 01 …"></label>` : `<p class="m full">Votre demande sera transmise au responsable, qui la planifiera.</p>`}
+    <div class="full" style="display:flex;gap:8px"><button class="btn btn-hot" type="submit">Créer l'OT</button><button class="btn btn-ghost" type="button" data-close>Annuler</button></div>
+  </form></div>`);
+  document.getElementById("otCli").onchange = ev => { document.getElementById("otEq").innerHTML = eqOpts(ev.target.value); };
+  document.getElementById("otForm").onsubmit = async ev => {
+    ev.preventDefault(); const b = ev.target.querySelector("button[type=submit]"); b.disabled = true;
+    const o = Object.fromEntries(new FormData(ev.target));
+    for (const k of ["equipement_id", "date_prevue", "assigne_a"]) if (!o[k]) o[k] = null;
+    if (o.assigne_a && !o.intervenant) { o.intervenant = nomMembre(o.assigne_a); o.intervenant_tel = o.intervenant_tel || (S.membres.find(m => m.user_id === o.assigne_a)?.telephone || ""); }
+    o.statut = isAdmin() && o.date_prevue ? "planifie" : "demande";
+    if (!isAdmin()) delete o.assigne_a;
+    if (pre.signalement_id) o.signalement_id = pre.signalement_id;
+    const { data, error } = await sb.from("ordres_travail").insert(o).select().single();
+    if (error) { toast(error.message); b.disabled = false; return; }
+    if (pre.signalement_id) await sb.from("signalements").update({ statut: "en_cours" }).eq("id", pre.signalement_id);
+    modal(""); await loadAll(); location.hash = "ot-" + data.id; toast(`${otNum(data)} créé`);
+  };
+}
+
+async function majOT(id, patch, msg) {
+  const { error } = await sb.from("ordres_travail").update(patch).eq("id", id);
+  if (error) { toast(error.message); return false; }
+  await loadAll(); renderOTDetail(id); if (msg) toast(msg); return true;
+}
+
+function renderOTDetail(id) {
+  if (!S.gmao) return besoinMaj("Travaux");
+  const o = S.ots.find(x => x.id === id);
+  if (!o) { $view.innerHTML = `<p class="empty">OT introuvable. <a href="#ot">Retour</a></p>`; return; }
+  const e = eqById(o.equipement_id), c = client(o.client_id), conso = S.consos.filter(x => x.ordre_id === o.id);
+  const etapes = ["demande", "planifie", "en_cours", "termine"], idx = etapes.indexOf(o.statut);
+  const msgWA = `Bonjour ${o.intervenant || ""},\n\nOrdre de travail ${otNum(o)} — ${o.titre}\n${W().Clients.slice(0, -1)} : ${c.nom}${e ? "\nÉquipement : " + e.emplacement + " (" + (TYPES[e.type]?.label || e.type) + ")" : ""}\nPriorité : ${PRIO[o.priorite].l}${o.date_prevue ? "\nDate prévue : " + fr(o.date_prevue) : ""}${o.description ? "\n\n" + o.description : ""}${e ? "\n\nFiche de l'équipement : " + publicUrl(e.code_public) : ""}\n\nMerci de confirmer.`;
+  $view.innerHTML = `<a href="#ot" class="m">← Travaux</a>
+  <div class="grid2" style="margin-top:10px"><div>
+    <div class="panel">
+      <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><div><span class="mono m">${otNum(o)}</span><h3 style="font-size:22px;margin-top:2px">${esc(o.titre)}</h3></div>
+        <span><span class="pill ${PRIO[o.priorite].c}">${PRIO[o.priorite].l}</span> <span class="pill ${o.statut === "termine" ? "p-ok" : o.statut === "annule" ? "" : otEnRetard(o) ? "p-bad" : "p-warn"}">${STATUTS[o.statut]}${otEnRetard(o) ? " · en retard" : ""}</span></span></div>
+      <div style="display:flex;gap:4px;margin:14px 0">${etapes.map((s2, k) => `<div style="flex:1;text-align:center;font-size:12px;padding:6px 2px;border-radius:8px;background:${o.statut === "annule" ? "var(--ice)" : k <= idx ? "var(--teal)" : "var(--ice)"};color:${o.statut !== "annule" && k <= idx ? "#fff" : "var(--ink2)"}">${k + 1}. ${STATUTS[s2]}</div>`).join("")}</div>
+      <table class="tbl" style="font-size:14.5px"><tbody>
+        <tr><td class="m">${W().Clients.slice(0, -1)}</td><td>${esc(c.nom || "")}</td></tr>
+        <tr><td class="m">Équipement</td><td>${e ? `<a href="#eq-${e.id}">${esc(e.emplacement)}</a> · ${TYPES[e.type]?.label || ""}${e.criticite === "critique" ? ' <span class="pill p-bad">Critique</span>' : ""}` : "—"}</td></tr>
+        <tr><td class="m">Type</td><td>${OT_TYPES[o.type]}</td></tr>
+        <tr><td class="m">Date prévue</td><td>${fr(o.date_prevue)}</td></tr>
+        <tr><td class="m">Assigné à</td><td>${o.assigne_a ? "👤 " + esc(nomMembre(o.assigne_a)) : "—"}${o.intervenant && o.intervenant !== nomMembre(o.assigne_a) ? " · " + esc(o.intervenant) : ""} ${esc(o.intervenant_tel || "")}</td></tr>
+        <tr><td class="m">Créé le</td><td>${fr(o.created_at)}${o.date_debut ? " · démarré le " + fr(o.date_debut) : ""}${o.date_fin ? " · terminé le " + fr(o.date_fin) : ""}</td></tr>
+      </tbody></table>
+      ${o.description ? `<p style="margin-top:12px"><b>Description</b><br>${esc(o.description)}</p>` : ""}
+      ${o.compte_rendu ? `<p style="margin-top:12px"><b>Compte rendu</b><br>${esc(o.compte_rendu)}</p>` : ""}
+    </div>
+    <div id="otAction"></div>
+  </div><div>
+    <div class="panel"><h3>Actions</h3><div style="display:flex;flex-direction:column;gap:8px">
+      ${o.statut === "demande" && isAdmin() ? `<button class="btn btn-teal" id="aPlan">Planifier et assigner</button>` : ""}
+      ${o.statut === "demande" && !isAdmin() ? `<p class="m">En attente de planification par le responsable.</p>` : ""}
+      ${o.statut === "planifie" && (isAdmin() || o.assigne_a === S.user.id) ? `<button class="btn btn-teal" id="aStart">Démarrer l'intervention</button>` : ""}
+      ${o.statut === "planifie" && isAdmin() ? `<button class="btn btn-ghost btn-sm" id="aPlan">Modifier la planification</button>` : ""}
+      ${o.statut === "en_cours" ? `<button class="btn btn-hot" id="aEnd">Terminer et rédiger le compte rendu</button>` : ""}
+      ${(o.intervenant_tel) && !["termine", "annule"].includes(o.statut) ? `<a class="btn btn-ghost btn-sm" target="_blank" rel="noopener" href="https://wa.me/${waNum(o.intervenant_tel)}?text=${encodeURIComponent(msgWA)}">Envoyer l'OT à l'intervenant (WhatsApp)</a>` : ""}
+      <a class="btn btn-ghost btn-sm" href="#ot-bon-${o.id}">Bon de travail (PDF)</a>
+      ${e ? `<a class="btn btn-ghost btn-sm" href="/depannage?marque=${encodeURIComponent(["Gree", "LG", "Samsung", "Daikin", "Midea"].find(m => (e.marque || "").toLowerCase().includes(m.toLowerCase())) || "*")}">Aide au dépannage</a>` : ""}
+      ${!["termine", "annule"].includes(o.statut) && isAdmin() ? `<button class="btn btn-ghost btn-sm" id="aCancel" style="color:var(--bad)">Annuler l'OT</button>` : ""}
+    </div></div>
+    <div class="panel"><h3>Pièces et coûts</h3>
+      ${conso.length ? `<table class="tbl"><tbody><tr><th>Pièce</th><th>Qté</th><th>Montant</th></tr>${conso.map(x => { const p = S.pieces.find(pp => pp.id === x.piece_id) || {}; return `<tr><td>${esc(p.designation || "?")}</td><td>${x.quantite} ${p.unite || ""}</td><td>${fcfa2(x.quantite * x.prix_unitaire)}</td></tr>`; }).join("")}</tbody></table>` : `<p class="m">Aucune pièce utilisée.</p>`}
+      <p style="margin-top:8px;font-size:14px">Main d'œuvre : <b>${fcfa2(o.cout_main_oeuvre)}</b>${o.duree_heures ? ` (${o.duree_heures} h)` : ""}<br>Pièces : <b>${fcfa2(coutPieces(o))}</b><br>Total : <b>${fcfa2((o.cout_main_oeuvre || 0) + coutPieces(o))}</b></p>
+    </div>
+  </div></div>`;
+  const q = sel => document.getElementById(sel);
+  if (q("aPlan")) q("aPlan").onclick = () => {
+    q("otAction").innerHTML = `<div class="panel"><h3>Planifier</h3><form class="form" id="fPlan">
+      <label>Date prévue<input class="field" type="date" name="date_prevue" required value="${o.date_prevue || iso(TODAY)}"></label>
+      <label>Assigner à<select class="field" name="assigne_a">${optsAssign(o.assigne_a)}</select></label>
+      <label>Intervenant (nom affiché)<input class="field" name="intervenant" value="${esc(o.intervenant || "")}" placeholder="Rempli automatiquement si assigné"></label>
+      <label>Téléphone<input class="field" name="intervenant_tel" value="${esc(o.intervenant_tel || "")}"></label>
+      <label>Priorité<select class="field" name="priorite">${Object.entries(PRIO).map(([k, v]) => `<option value="${k}" ${o.priorite === k ? "selected" : ""}>${v.l}</option>`).join("")}</select></label>
+      <div class="full"><button class="btn btn-teal" type="submit">Enregistrer</button></div></form></div>`;
+    q("fPlan").onsubmit = ev => { ev.preventDefault(); const f = Object.fromEntries(new FormData(ev.target)); f.assigne_a = f.assigne_a || null;
+      if (f.assigne_a) { f.intervenant = f.intervenant || nomMembre(f.assigne_a); f.intervenant_tel = f.intervenant_tel || (S.membres.find(m => m.user_id === f.assigne_a)?.telephone || ""); }
+      majOT(o.id, { ...f, statut: "planifie" }, "OT planifié"); };
+  };
+  if (q("aStart")) q("aStart").onclick = () => majOT(o.id, { statut: "en_cours", date_debut: new Date().toISOString() }, "Intervention démarrée");
+  if (q("aCancel")) q("aCancel").onclick = () => confirmBox(`Annuler ${otNum(o)} ?`, () => majOT(o.id, { statut: "annule" }, "OT annulé"));
+  if (q("aEnd")) q("aEnd").onclick = () => formTerminer(o);
+}
+
+function formTerminer(o) {
+  const e = eqById(o.equipement_id);
+  const heures = o.date_debut ? Math.max(0.5, Math.round((Date.now() - Date.parse(o.date_debut)) / 36e5 * 2) / 2) : "";
+  const ligneP = () => `<div class="pl" style="display:grid;grid-template-columns:1fr 90px 32px;gap:6px;margin-bottom:6px"><select class="field" name="piece">${`<option value="">— Pièce —</option>` + S.pieces.map(p => `<option value="${p.id}">${esc(p.designation)} (stock ${p.stock} ${p.unite})</option>`).join("")}</select><input class="field" name="qte" type="number" step="0.01" min="0" placeholder="Qté"><button type="button" class="btn btn-ghost btn-sm" data-rm>✕</button></div>`;
+  document.getElementById("otAction").innerHTML = `<div class="panel" style="border:2px solid var(--heat)"><h3>Terminer l'intervention</h3><form class="form" id="fEnd">
+    <label class="full">Compte rendu (travaux réalisés, constats)<textarea class="field" name="compte_rendu" rows="3" required placeholder="Ex. Filtres nettoyés, condensateur ventilateur remplacé, essais OK."></textarea></label>
+    ${e ? `<label>HP (bar)<input class="field mono" name="hp" inputmode="decimal"></label><label>BP (bar)<input class="field mono" name="bp" inputmode="decimal"></label>
+    <label>Intensité (A)<input class="field mono" name="intensite" inputmode="decimal"></label><label>T soufflage (°C)<input class="field mono" name="t_soufflage" inputmode="decimal"></label>
+    <label>T reprise (°C)<input class="field mono" name="t_reprise" inputmode="decimal"></label>` : ""}
+    <label>Durée (heures)<input class="field" name="duree_heures" type="number" step="0.5" min="0" value="${heures}"></label>
+    <label>Coût main d'œuvre (FCFA)<input class="field" name="cout_main_oeuvre" type="number" min="0" step="500" value="0"></label>
+    <div class="full"><b style="font-size:14px">Pièces utilisées</b> <span class="m">(décomptées automatiquement du stock)</span><div id="pls" style="margin-top:6px">${S.pieces.length ? ligneP() : `<p class="m">Aucune pièce en stock. <a href="#stock">Ajouter des pièces</a></p>`}</div>${S.pieces.length ? `<button type="button" class="btn btn-ghost btn-sm" id="addP">+ Ajouter une pièce</button>` : ""}</div>
+    <div class="full"><button class="btn btn-hot" type="submit">Clôturer l'OT</button></div></form></div>`;
+  const pls = document.getElementById("pls");
+  if (document.getElementById("addP")) document.getElementById("addP").onclick = () => pls.insertAdjacentHTML("beforeend", ligneP());
+  pls.onclick = ev => { if (ev.target.matches("[data-rm]")) ev.target.closest(".pl").remove(); };
+  document.getElementById("otAction").scrollIntoView({ behavior: "smooth" });
+  document.getElementById("fEnd").onsubmit = async ev => {
+    ev.preventDefault(); const b = ev.target.querySelector("button[type=submit]"); b.disabled = true;
+    const f = Object.fromEntries(new FormData(ev.target)), num = k => f[k] === "" || f[k] == null ? null : Number(String(f[k]).replace(",", "."));
+    try {
+      // 1. Pièces consommées
+      const lignes = [...pls.querySelectorAll(".pl")].map(l => ({ piece_id: l.querySelector("[name=piece]").value, quantite: Number(l.querySelector("[name=qte]").value) })).filter(l => l.piece_id && l.quantite > 0);
+      if (lignes.length) {
+        const { error } = await sb.from("consommations").insert(lignes.map(l => ({ ...l, ordre_id: o.id, prix_unitaire: S.pieces.find(p => p.id === l.piece_id).prix_unitaire })));
+        if (error) throw error;
+      }
+      // 2. Historique de l'équipement (carnet QR)
+      let intervention_id = null;
+      if (e) {
+        const { data, error } = await sb.from("interventions").insert({ equipement_id: e.id, date: iso(TODAY), type: ["preventif", "inspection"].includes(o.type) ? "preventif" : "curatif", observations: `${otNum(o)} — ${f.compte_rendu}`, hp: num("hp"), bp: num("bp"), intensite: num("intensite"), t_soufflage: num("t_soufflage"), t_reprise: num("t_reprise") }).select().single();
+        if (error) throw error; intervention_id = data.id;
+      }
+      // 3. Clôture de l'OT (+ signalement résolu)
+      const { error } = await sb.from("ordres_travail").update({ statut: "termine", date_fin: new Date().toISOString(), compte_rendu: f.compte_rendu, duree_heures: num("duree_heures"), cout_main_oeuvre: num("cout_main_oeuvre") || 0, intervention_id, date_debut: o.date_debut || new Date().toISOString() }).eq("id", o.id);
+      if (error) throw error;
+      if (o.signalement_id) await sb.from("signalements").update({ statut: "resolu", resolu_at: new Date().toISOString() }).eq("id", o.signalement_id);
+      await loadAll(); renderOTDetail(o.id); toast(`${otNum(o)} terminé${e ? " · carnet de l'équipement mis à jour" : ""}`);
+    } catch (err) { toast(err.message); b.disabled = false; }
+  };
+}
+
+async function genererOTPreventifs() {
+  if (!S.gmao) return besoinMaj("Travaux");
+  const save = { ...PL }; PL.site = ""; PL.crit = "";
+  const occ = occurrences(30); Object.assign(PL, save);
+  const existe = (e, d) => S.ots.some(o => o.equipement_id === e.id && ["preventif", "inspection"].includes(o.type) && o.statut !== "annule" && o.statut !== "termine" && o.date_prevue && Math.abs(Date.parse(o.date_prevue) - d) < freq(e) * DAY / 2);
+  const aCreer = []; for (const x of occ) { const d = x.retard ? TODAY : x.d; if (!existe(x.e, d) && !aCreer.some(a => a.equipement_id === x.e.id && Math.abs(Date.parse(a.date_prevue) - d) < freq(x.e) * DAY / 2)) aCreer.push({ client_id: x.e.client_id, equipement_id: x.e.id, titre: `Entretien préventif — ${TYPES[x.e.type]?.label || x.e.type}`, description: `Points de contrôle : ${TYPES[x.e.type]?.pts || ""}`, type: "preventif", priorite: x.e.criticite === "critique" ? "haute" : x.retard ? "haute" : "normale", statut: "planifie", date_prevue: iso(d) }); }
+  if (!aCreer.length) return toast("Tous les entretiens des 30 prochains jours ont déjà un OT");
+  confirmBox(`Créer <b>${aCreer.length}</b> ordre(s) de travail préventif(s) pour les 30 prochains jours (retards inclus, à la date du jour) ?`, async () => {
+    const { error } = await sb.from("ordres_travail").insert(aCreer);
+    if (error) return toast(error.message);
+    await loadAll(); location.hash = "ot"; renderOT(); toast(`${aCreer.length} OT préventifs créés`);
+  });
+}
+
+function renderBon(id) {
+  const o = (S.ots || []).find(x => x.id === id);
+  if (!o) { $view.innerHTML = `<p class="empty">OT introuvable.</p>`; return; }
+  const e = eqById(o.equipement_id), c = client(o.client_id), conso = S.consos.filter(x => x.ordre_id === o.id);
+  $view.innerHTML = `<div class="noprint" style="display:flex;gap:8px;margin-bottom:14px"><a class="btn btn-ghost btn-sm" href="#ot-${o.id}">← Retour</a><button class="btn btn-hot btn-sm" onclick="print()">Imprimer / Enregistrer en PDF</button></div>
+  <div class="cert"><div class="ch"><div><div class="disp" style="font-size:26px;font-weight:800">Bon de travail ${otNum(o)}</div><div class="m">${OT_TYPES[o.type]} · priorité ${PRIO[o.priorite].l.toLowerCase()} · ${STATUTS[o.statut]}</div></div>
+    <div style="text-align:right;font-size:14px"><b>${esc(S.tech.entreprise || S.tech.nom)}</b><br>${esc(S.tech.nom)}<br><span class="mono">${esc(S.tech.whatsapp)}</span></div></div>
+  <table><tr><th>${W().Clients.slice(0, -1)}</th><td>${esc(c.nom || "")}</td><th>Date prévue</th><td>${fr(o.date_prevue)}</td></tr>
+    <tr><th>Équipement</th><td>${e ? esc(e.emplacement) + (e.zone ? " · " + esc(e.zone) : "") : "—"}</td><th>Type d'équipement</th><td>${e ? TYPES[e.type]?.label || "" : "—"}</td></tr>
+    <tr><th>Marque / puissance</th><td>${e ? esc(e.marque) + " " + esc(e.puissance) : "—"}</td><th>Fluide</th><td>${e ? esc(e.fluide) : "—"}</td></tr>
+    <tr><th>Intervenant</th><td>${esc(o.intervenant || "")}</td><th>Début / fin</th><td>${fr(o.date_debut)} / ${fr(o.date_fin)}</td></tr></table>
+  <h3 style="font-size:16px;margin-top:18px">Travail demandé</h3><p style="border:1px solid var(--line);padding:10px;min-height:50px">${esc(o.titre)}${o.description ? "<br>" + esc(o.description) : ""}</p>
+  ${e ? `<p class="m" style="margin-top:6px">Points de contrôle : ${TYPES[e.type]?.pts || ""}</p>` : ""}
+  <h3 style="font-size:16px;margin-top:18px">Sécurité</h3><p style="font-size:13.5px">☐ Consignation électrique réalisée (NF C 18-510) &nbsp; ☐ EPI portés &nbsp; ☐ Zone balisée &nbsp; ☐ Fluides : récupération conforme</p>
+  <h3 style="font-size:16px;margin-top:18px">Compte rendu</h3><p style="border:1px solid var(--line);padding:10px;min-height:90px">${esc(o.compte_rendu || "")}</p>
+  <h3 style="font-size:16px;margin-top:18px">Pièces utilisées</h3><table><tr><th>Désignation</th><th>Quantité</th><th>Prix unitaire</th><th>Montant</th></tr>
+  ${conso.map(x => { const p = S.pieces.find(pp => pp.id === x.piece_id) || {}; return `<tr><td>${esc(p.designation || "")}</td><td>${x.quantite} ${p.unite || ""}</td><td>${fcfa2(x.prix_unitaire)}</td><td>${fcfa2(x.quantite * x.prix_unitaire)}</td></tr>`; }).join("") || `<tr><td colspan="4" style="height:60px"></td></tr>`}</table>
+  <p style="margin-top:10px;font-size:14px">Durée : ${o.duree_heures ?? "……"} h · Main d'œuvre : ${fcfa2(o.cout_main_oeuvre)} · Pièces : ${fcfa2(coutPieces(o))} · <b>Total : ${fcfa2((o.cout_main_oeuvre || 0) + coutPieces(o))}</b></p>
+  <div class="sig"><div>L'intervenant<br><b style="color:var(--ink)">${esc(o.intervenant || "")}</b></div><div>Le responsable du ${W().client}<br><b style="color:var(--ink)">${esc(c.contact || "")}</b></div></div>
+  <p class="m" style="margin-top:16px">Généré par FroidPass</p></div>`;
+}
+
+// =====================================================================
+// GMAO — STOCK DE PIÈCES ET CONSOMMABLES
+// =====================================================================
+function renderStock() {
+  if (!S.gmao) return besoinMaj("Stock");
+  const alertes = S.pieces.filter(p => Number(p.stock) <= Number(p.stock_min));
+  const valeur = S.pieces.reduce((t, p) => t + Math.max(0, p.stock) * p.prix_unitaire, 0);
+  const conso30 = S.consos.filter(c => Date.parse(c.created_at) > TODAY - 30 * DAY);
+  $view.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:end;gap:10px;flex-wrap:wrap;margin-bottom:12px"><div><h1 style="font-size:28px">Stock</h1><p class="m">Pièces de rechange et consommables (filtres, condensateurs, fluides…). Le stock baisse automatiquement quand une pièce est utilisée sur un OT.</p></div>${isAdmin() ? `<button class="btn btn-hot btn-sm" id="addPiece">+ Nouvelle pièce</button>` : ""}</div>
+  <div class="kpis"><div class="kpi"><b>${S.pieces.length}</b><span>articles</span></div><div class="kpi ${alertes.length ? "alert" : ""}"><b>${alertes.length}</b><span>sous le seuil d'alerte</span></div><div class="kpi"><b style="font-size:22px">${fcfa2(valeur)}</b><span>valeur du stock</span></div><div class="kpi"><b style="font-size:22px">${fcfa2(conso30.reduce((t, c) => t + c.quantite * c.prix_unitaire, 0))}</b><span>consommé sur 30 jours</span></div></div>
+  <div class="panel" style="overflow-x:auto">${S.pieces.length ? `<table class="tbl"><tbody><tr><th>Désignation</th><th>Réf.</th><th>Stock</th><th>Seuil</th><th>Prix unit.</th><th>Emplacement</th><th></th></tr>
+    ${S.pieces.map(p => `<tr><td><b>${esc(p.designation)}</b></td><td class="mono">${esc(p.reference)}</td><td><span class="pill ${Number(p.stock) <= Number(p.stock_min) ? "p-bad" : "p-ok"}">${p.stock} ${p.unite}</span></td><td>${p.stock_min}</td><td>${fcfa2(p.prix_unitaire)}</td><td>${esc(p.emplacement)}</td>
+      <td style="white-space:nowrap">${isAdmin() ? `<button class="btn btn-teal btn-sm" data-in="${p.id}">+ Entrée</button> <button class="btn btn-ghost btn-sm" data-edit="${p.id}">Modifier</button>` : ""}</td></tr>`).join("")}</tbody></table>` : `<p class="empty">Aucune pièce. Ajoutez vos consommables courants : filtres, condensateurs, fluide R410A / R32 (en kg), courroies, pompes de relevage…</p>`}</div>`;
+  if (document.getElementById("addPiece")) document.getElementById("addPiece").onclick = () => formPiece({});
+  document.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => formPiece(S.pieces.find(p => p.id === b.dataset.edit)));
+  document.querySelectorAll("[data-in]").forEach(b => b.onclick = () => {
+    const p = S.pieces.find(x => x.id === b.dataset.in);
+    modal(`<div class="panel"><h3>Entrée en stock : ${esc(p.designation)}</h3><form class="form" id="fIn" style="grid-template-columns:1fr"><label>Quantité reçue (${p.unite})<input class="field" name="q" type="number" step="0.01" min="0.01" required></label><div style="display:flex;gap:8px"><button class="btn btn-hot" type="submit">Ajouter au stock</button><button class="btn btn-ghost" type="button" data-close>Annuler</button></div></form></div>`);
+    document.getElementById("fIn").onsubmit = async ev => { ev.preventDefault(); const q = Number(new FormData(ev.target).get("q")); const { error } = await sb.from("pieces").update({ stock: Number(p.stock) + q }).eq("id", p.id); if (error) return toast(error.message); modal(""); await loadAll(); renderStock(); toast("Stock mis à jour"); };
+  });
+}
+function formPiece(p) {
+  modal(`<div class="panel"><h3>${p.id ? "Modifier la pièce" : "Nouvelle pièce"}</h3><form class="form" id="fP">
+    <label class="full">Désignation<input class="field" name="designation" required value="${esc(p.designation || "")}" placeholder="Ex. Condensateur 35 µF, Filtre G4, Fluide R32"></label>
+    <label>Référence<input class="field" name="reference" value="${esc(p.reference || "")}"></label>
+    <label>Unité<select class="field" name="unite">${["u", "kg", "L", "m", "boîte"].map(u => `<option ${p.unite === u ? "selected" : ""}>${u}</option>`).join("")}</select></label>
+    <label>Stock actuel<input class="field" name="stock" type="number" step="0.01" value="${p.stock ?? 0}"></label>
+    <label>Seuil d'alerte<input class="field" name="stock_min" type="number" step="0.01" value="${p.stock_min ?? 0}"></label>
+    <label>Prix unitaire (FCFA)<input class="field" name="prix_unitaire" type="number" min="0" value="${p.prix_unitaire ?? 0}"></label>
+    <label>Emplacement<input class="field" name="emplacement" value="${esc(p.emplacement || "")}" placeholder="Magasin, véhicule…"></label>
+    <div class="full" style="display:flex;gap:8px"><button class="btn btn-hot" type="submit">Enregistrer</button>${p.id ? `<button class="btn btn-ghost" type="button" id="delP" style="color:var(--bad)">Supprimer</button>` : ""}<button class="btn btn-ghost" type="button" data-close>Annuler</button></div></form></div>`);
+  document.getElementById("fP").onsubmit = async ev => {
+    ev.preventDefault(); const o = Object.fromEntries(new FormData(ev.target)); for (const k of ["stock", "stock_min", "prix_unitaire"]) o[k] = Number(o[k] || 0);
+    const { error } = p.id ? await sb.from("pieces").update(o).eq("id", p.id) : await sb.from("pieces").insert(o);
+    if (error) return toast(error.message); modal(""); await loadAll(); renderStock(); toast("Pièce enregistrée");
+  };
+  if (document.getElementById("delP")) document.getElementById("delP").onclick = async () => {
+    const { error } = await sb.from("pieces").delete().eq("id", p.id);
+    if (error) return toast(error.message.includes("foreign") ? "Pièce déjà utilisée sur un OT : mettez plutôt son stock à 0" : error.message);
+    modal(""); await loadAll(); renderStock();
+  };
+}
+
+// =====================================================================
+// GMAO — INDICATEURS DE MAINTENANCE
+// =====================================================================
+let IND = 90;
+function renderIndicateurs() {
+  const debut = TODAY - IND * DAY, dans = t => t && Date.parse(t) >= debut && Date.parse(t) <= TODAY + DAY;
+  const ots = S.ots || [];
+  const prevDus = ots.filter(o => ["preventif", "inspection"].includes(o.type) && o.statut !== "annule" && o.date_prevue && dans(o.date_prevue) && Date.parse(o.date_prevue) <= TODAY);
+  const prevFaits = prevDus.filter(o => o.statut === "termine");
+  const tauxPrev = prevDus.length ? Math.round(100 * prevFaits.length / prevDus.length) : null;
+  const pannesInt = S.ints.filter(i => i.type === "curatif" && dans(i.date));
+  const nbPannes = pannesInt.length + ots.filter(o => o.type === "curatif" && o.statut === "termine" && !o.intervention_id && dans(o.date_fin)).length;
+  const curTermines = ots.filter(o => o.type === "curatif" && o.statut === "termine" && dans(o.date_fin));
+  const durees = curTermines.map(o => o.duree_heures != null ? Number(o.duree_heures) : (o.date_debut ? (Date.parse(o.date_fin) - Date.parse(o.date_debut)) / 36e5 : null)).filter(x => x != null);
+  const mttr = durees.length ? (durees.reduce((a, b) => a + b, 0) / durees.length) : null;
+  const mtbf = nbPannes ? Math.round(S.eqs.length * IND / nbPannes) : null;
+  const termines = ots.filter(o => o.statut === "termine" && dans(o.date_fin));
+  const coutParSite = S.clients.map(c => { const l = termines.filter(o => o.client_id === c.id); return { c, mo: l.reduce((t, o) => t + (o.cout_main_oeuvre || 0), 0), pc: l.reduce((t, o) => t + coutPieces(o), 0), n: l.length }; }).filter(x => x.n);
+  const totalCout = coutParSite.reduce((t, x) => t + x.mo + x.pc, 0);
+  const partPrev = termines.length ? Math.round(100 * termines.filter(o => ["preventif", "inspection"].includes(o.type)).length / termines.length) : null;
+  const top = S.eqs.map(e => ({ e, n: pannesInt.filter(i => i.equipement_id === e.id).length })).filter(x => x.n).sort((a, b) => b.n - a.n).slice(0, 5);
+  const late = S.eqs.filter(e => status(e).d < 0).length, conf = S.eqs.length ? Math.round(100 * (S.eqs.length - late) / S.eqs.length) : null;
+  const sigOuverts = (S.sigs || []).filter(x => x.statut !== "resolu").length;
+  const kpi = (v, l, aide, alerte) => `<div class="kpi ${alerte ? "alert" : ""}"><b>${v}</b><span>${l}</span><p class="m" style="font-size:12px;margin-top:6px">${aide}</p></div>`;
+  $view.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:end;gap:10px;flex-wrap:wrap;margin-bottom:12px"><div><h1 style="font-size:28px">Indicateurs de maintenance</h1><p class="m">Pour piloter la maintenance et justifier les budgets. Chaque indicateur est expliqué en une ligne.</p></div>
+    <span class="noprint" style="display:flex;gap:8px"><select class="field" id="indP" style="width:auto"><option value="30">30 jours</option><option value="90">90 jours</option><option value="180">6 mois</option><option value="365">12 mois</option></select><button class="btn btn-ghost btn-sm" onclick="print()">Imprimer</button></span></div>
+  ${!S.gmao ? `<div class="panel" style="border-color:var(--heat)">Pour des indicateurs complets (OT, coûts, MTTR), activez le module GMAO : exécutez <span class="mono">supabase/mise-a-jour-gmao.sql</span> dans Supabase.</div>` : ""}
+  <div class="kpis">
+    ${kpi(conf == null ? "—" : conf + " %", "parc à jour", "Part des équipements dont l'entretien préventif n'est pas en retard.", conf != null && conf < 80)}
+    ${kpi(tauxPrev == null ? "—" : tauxPrev + " %", "préventif réalisé", "OT préventifs terminés / OT préventifs prévus sur la période.", tauxPrev != null && tauxPrev < 80)}
+    ${kpi(nbPannes, "pannes", "Interventions curatives sur la période.", false)}
+    ${kpi(sigOuverts, "signalements ouverts", "Pannes signalées par QR, pas encore résolues.", sigOuverts > 0)}
+  </div>
+  <div class="kpis">
+    ${kpi(mttr == null ? "—" : mttr.toFixed(1) + " h", "MTTR", "Temps moyen de réparation d'une panne (plus c'est bas, mieux c'est).", false)}
+    ${kpi(mtbf == null ? "—" : mtbf + " j", "MTBF", "Temps moyen entre deux pannes, par équipement (plus c'est haut, mieux c'est).", false)}
+    ${kpi(partPrev == null ? "—" : partPrev + " %", "part du préventif", "Part du préventif dans les OT terminés. Objectif courant : plus de 70 %.", partPrev != null && partPrev < 50)}
+    ${kpi(`<span style="font-size:22px">${fcfa2(totalCout)}</span>`, "coût de maintenance", "Main d'œuvre + pièces des OT terminés sur la période.", false)}
+  </div>
+  <div class="grid2">
+    <div class="panel"><h3>Coûts par ${W().client}</h3>${coutParSite.length ? `<table class="tbl"><tbody><tr><th>${W().Clients.slice(0, -1)}</th><th>OT</th><th>Main d'œuvre</th><th>Pièces</th><th>Total</th></tr>${coutParSite.map(x => `<tr><td>${esc(x.c.nom)}</td><td>${x.n}</td><td>${fcfa2(x.mo)}</td><td>${fcfa2(x.pc)}</td><td><b>${fcfa2(x.mo + x.pc)}</b></td></tr>`).join("")}</tbody></table>` : `<p class="m">Aucun OT terminé sur la période.</p>`}</div>
+    <div class="panel"><h3>Équipements les plus en panne</h3>${top.length ? top.map(x => `<div style="margin:8px 0"><div style="display:flex;justify-content:space-between;font-size:14px"><a href="#eq-${x.e.id}">${esc(x.e.emplacement)}</a><span class="m">${esc(client(x.e.client_id).nom || "")} · <b>${x.n}</b></span></div><div style="height:8px;background:var(--ice);border-radius:4px"><div style="height:8px;width:${Math.round(100 * x.n / top[0].n)}%;background:var(--bad);border-radius:4px"></div></div></div>`).join("") + `<p class="m" style="margin-top:8px">Un équipement qui tombe souvent en panne : vérifier la cause racine, rapprocher le préventif, ou envisager son remplacement.</p>` : `<p class="m">Aucune panne enregistrée sur la période. ✅</p>`}</div>
+  </div>`;
+  const s2 = document.getElementById("indP"); s2.value = String(IND); s2.onchange = () => { IND = Number(s2.value); renderIndicateurs(); };
+}
+
+// =====================================================================
+// AIDE — premiers pas + lexique simple
+// =====================================================================
+function etapesDemarrage() {
+  return [
+    { ok: !!(S.tech.nom && S.tech.whatsapp), t: "Compléter mon profil", l: "#profil" },
+    { ok: S.clients.length > 0, t: `Créer mon premier ${W().client}`, l: "#clients" },
+    { ok: S.eqs.length > 0, t: "Enregistrer un équipement (le QR est créé)", l: "#parc" },
+    { ok: S.ints.length > 0 || (S.ots || []).some(o => o.statut === "termine"), t: "Enregistrer une intervention ou clôturer un OT", l: "#ot" },
+    { ok: (S.pieces || []).length > 0, t: "Ajouter mes pièces courantes au stock", l: "#stock" }
+  ];
+}
+function renderAide() {
+  const et = etapesDemarrage();
+  $view.innerHTML = `<h1 style="font-size:28px;margin-bottom:12px">Aide</h1>
+  <div class="grid2"><div>
+    <div class="panel"><h3>Premiers pas (${et.filter(x => x.ok).length}/${et.length})</h3>${et.map((x, k) => `<a href="${x.l}" class="row" style="grid-template-columns:auto 1fr"><span class="pill ${x.ok ? "p-ok" : ""}" style="min-width:34px;justify-content:center">${x.ok ? "✓" : k + 1}</span><span>${x.t}</span></a>`).join("")}</div>
+    <div class="panel"><h3>Le circuit d'une intervention</h3><ol style="padding-left:20px;line-height:1.8">
+      <li><b>Demande</b> : une panne est signalée (par QR, par téléphone) ou un besoin apparaît → <a href="#ot">Travaux</a>, « + Nouvel OT ».</li>
+      <li><b>Planification</b> : on fixe la date et l'intervenant, on lui envoie l'OT par WhatsApp.</li>
+      <li><b>Réalisation</b> : « Démarrer l'intervention » sur place, puis consulter l'aide au <a href="/depannage">dépannage</a> si besoin.</li>
+      <li><b>Clôture</b> : compte rendu, mesures, pièces utilisées. Le carnet QR de l'équipement et le stock se mettent à jour tout seuls.</li></ol>
+      <p class="m">Le préventif : chaque mois, cliquez sur « Générer les OT préventifs » dans Travaux. FroidPass crée les OT à partir du planning.</p></div>
+  </div><div>
+    <div class="panel"><h3>Lexique</h3><table class="tbl" style="white-space:normal"><tbody>
+      ${[["GMAO", "Gestion de la maintenance assistée par ordinateur : l'outil qui organise toutes les interventions."], ["OT", "Ordre de travail : la fiche d'une intervention, de la demande à la clôture."], ["Préventif", "Entretien fait avant la panne, à date fixe, pour l'éviter."], ["Curatif", "Réparation après une panne."], ["Criticité", "Importance de l'équipement : une panne d'un équipement critique (bloc, pharmacie, serveur) passe en priorité."], ["MTTR", "Temps moyen pour réparer une panne."], ["MTBF", "Temps moyen entre deux pannes d'un même équipement."], ["Seuil d'alerte", "Quantité minimale en stock avant de recommander une pièce."], ["Cause racine", "La vraie origine d'une panne, à traiter pour qu'elle ne revienne pas."]].map(([a, b]) => `<tr><td style="white-space:nowrap"><b>${a}</b></td><td style="white-space:normal">${b}</td></tr>`).join("")}
+    </tbody></table></div>
+    <div class="panel"><h3>Besoin d'aide ?</h3><p class="m">Écrivez-nous sur WhatsApp, nous répondons rapidement.</p><a class="btn btn-teal btn-sm" style="margin-top:8px" target="_blank" rel="noopener" href="https://wa.me/${CFG.WHATSAPP_FROIDPASS}?text=${encodeURIComponent("Bonjour FroidPass, j'ai une question sur l'application.")}">WhatsApp FroidPass</a></div>
+  </div></div>`;
+}
+
+
+// =====================================================================
+// ÉQUIPE ET RÔLES
+// =====================================================================
+function optsAssign(sel) {
+  const opts = [`<option value="">— Non assigné / prestataire externe —</option>`];
+  if (isAdmin() && !S.moi) opts.push(`<option value="${S.user.id}" ${sel === S.user.id ? "selected" : ""}>Moi (${esc(S.tech.nom || "responsable")})</option>`);
+  for (const m of S.membres || []) opts.push(`<option value="${m.user_id}" ${sel === m.user_id ? "selected" : ""}>${esc(m.nom || "Membre")} · ${m.role === "admin" ? "responsable" : "technicien"}</option>`);
+  return opts.join("");
+}
+function majMenuRole() {
+  const menu = document.getElementById("menu"); if (!menu) return;
+  const set = (v, txt, show = true) => { const a = menu.querySelector(`a[data-v="${v}"]`); if (a) { if (txt) a.textContent = txt; a.hidden = !show; } };
+  set("tableau", isAdmin() ? "Tableau" : "Mon espace");
+  set("ot", isAdmin() ? "Travaux" : "Mes OT");
+  set("indicateurs", null, isAdmin());
+  if (isAdmin() && !menu.querySelector('a[data-v="equipe"]')) menu.querySelector('a[data-v="aide"]').insertAdjacentHTML("beforebegin", `<a href="#equipe" data-v="equipe">Équipe</a>`);
+}
+
+function renderMonEspace() {
+  const mes = (S.ots || []).filter(o => o.assigne_a === S.user.id);
+  const aFaire = mes.filter(o => ["planifie", "en_cours"].includes(o.statut)).sort((a, b) => (b.statut === "en_cours") - (a.statut === "en_cours") || String(a.date_prevue || "9").localeCompare(String(b.date_prevue || "9")));
+  const finis = mes.filter(o => o.statut === "termine" && Date.parse(o.date_fin) >= Date.UTC(new Date(TODAY).getUTCFullYear(), new Date(TODAY).getUTCMonth(), 1));
+  const sigs = (S.sigs || []).filter(x => x.statut !== "resolu");
+  $view.innerHTML = `<h1 style="font-size:30px;margin-bottom:4px">Bonjour ${esc(((S.me || {}).nom || "").split(" ")[0])}</h1>
+  <p class="m" style="margin-bottom:16px">Équipe ${esc(S.tech.entreprise || S.tech.nom)} · votre espace technicien</p>
+  <div class="kpis">
+    <div class="kpi"><b>${aFaire.length}</b><span>OT à réaliser</span></div>
+    <div class="kpi alert"><b>${aFaire.filter(otEnRetard).length}</b><span>en retard</span></div>
+    <div class="kpi"><b>${aFaire.filter(o => o.statut === "en_cours").length}</b><span>en cours</span></div>
+    <div class="kpi"><b>${finis.length}</b><span>terminés ce mois</span></div>
+  </div>
+  <div class="grid2"><div class="panel"><h3>Mes interventions à faire</h3>${aFaire.map(carteOT).join("") || `<p class="empty">Aucun OT assigné pour le moment. ✅</p>`}</div>
+  <div>
+    ${sigs.length ? `<div class="panel" style="border:2px solid var(--bad)"><h3>🚨 ${sigs.length} panne(s) signalée(s)</h3><p class="m">Prévenez le responsable si vous êtes sur place.</p>${sigs.slice(0, 5).map(x => { const e = eqById(x.equipement_id) || {}; return `<div style="padding:8px 0;border-top:1px solid var(--line)"><b>${esc(e.emplacement || "?")}</b> · ${esc(client(e.client_id).nom || "")}<div class="m">${esc(x.description)}</div></div>`; }).join("")}</div>` : ""}
+    <div class="panel"><h3>Raccourcis</h3><div style="display:flex;flex-direction:column;gap:8px">
+      <button class="btn btn-hot" id="besoin">+ Signaler un besoin / une panne</button>
+      <a class="btn btn-ghost" href="#parc">Consulter le parc</a>
+      <a class="btn btn-ghost" href="/depannage">Codes erreur et dépannage</a></div></div>
+  </div></div>`;
+  document.getElementById("besoin").onclick = () => openOTForm({});
+}
+
+function renderEquipe() {
+  const m = S.membres || [], inv = S.invitations || [];
+  const lien = location.origin + "/app#inscription";
+  $view.innerHTML = `<h1 style="font-size:28px;margin-bottom:6px">Équipe</h1>
+  <p class="m" style="margin-bottom:14px">Le <b>responsable</b> (directeur, responsable maintenance) voit et gère tout. Chaque <b>technicien</b> a son espace : ses OT assignés, ses comptes rendus, le parc et le dépannage. Il ne voit ni les coûts globaux, ni l'abonnement, et ne peut rien supprimer.</p>
+  <div class="grid2"><div>
+    <div class="panel"><h3>Membres (${m.length + 1})</h3>
+      <div class="row" style="cursor:default;grid-template-columns:auto 1fr auto"><div class="ic">👑</div><div><div class="t">${esc(S.tech.nom || "Responsable")}</div><div class="m">Titulaire du compte · responsable</div></div><span></span></div>
+      ${m.map(x => `<div class="row" style="cursor:default;grid-template-columns:auto 1fr auto"><div class="ic">${x.role === "admin" ? "🧭" : "🔧"}</div><div><div class="t">${esc(x.nom || "Membre")}</div><div class="m">${x.role === "admin" ? "Responsable" : "Technicien"} · ${esc(x.telephone || "")} · ${(S.ots || []).filter(o => o.assigne_a === x.user_id && ["planifie", "en_cours"].includes(o.statut)).length} OT en cours</div></div>
+        ${x.user_id !== S.user.id ? `<span style="display:flex;gap:6px"><select class="field" data-role="${x.id}" style="width:auto;padding:5px 8px"><option value="technicien" ${x.role === "technicien" ? "selected" : ""}>Technicien</option><option value="admin" ${x.role === "admin" ? "selected" : ""}>Responsable</option></select><button class="btn btn-ghost btn-sm" data-rmm="${x.id}" style="color:var(--bad)">Retirer</button></span>` : "<span></span>"}</div>`).join("")}
+    </div>
+    ${inv.length ? `<div class="panel"><h3>Invitations en attente</h3>${inv.map(x => `<div class="row" style="cursor:default;grid-template-columns:1fr auto"><div><div class="t">${esc(x.nom || x.email)}</div><div class="m">${esc(x.email)} · ${x.role === "admin" ? "responsable" : "technicien"}</div></div><span style="display:flex;gap:6px">${x.telephone ? `<a class="btn btn-teal btn-sm" target="_blank" rel="noopener" href="https://wa.me/${waNum(x.telephone)}?text=${encodeURIComponent(msgInvitation(x, lien))}">Relancer</a>` : ""}<button class="btn btn-ghost btn-sm" data-rmi="${x.id}">Annuler</button></span></div>`).join("")}</div>` : ""}
+  </div>
+  <div class="panel"><h3>Inviter un membre</h3>
+    <form class="form" id="fInv" style="grid-template-columns:1fr">
+      <label>Nom<input class="field" name="nom" required></label>
+      <label>E-mail (celui qu'il utilisera pour se connecter)<input class="field" type="email" name="email" required></label>
+      <label>WhatsApp<input class="field" name="telephone" placeholder="+229 01 …"></label>
+      <label>Rôle<select class="field" name="role"><option value="technicien">Technicien</option><option value="admin">Responsable (accès complet)</option></select></label>
+      <button class="btn btn-hot" type="submit">Créer l'invitation</button></form>
+    <p class="m" style="margin-top:12px">Ensuite, la personne crée son compte sur <span class="mono">${esc(lien)}</span> avec cet e-mail : elle rejoint automatiquement votre équipe.</p>
+  </div></div>`;
+  document.getElementById("fInv").onsubmit = async ev => {
+    ev.preventDefault(); const o = Object.fromEntries(new FormData(ev.target)); o.email = o.email.trim().toLowerCase();
+    const { error } = await sb.from("invitations").insert(o);
+    if (error) return toast(error.message.includes("duplicate") ? "Cette personne est déjà invitée" : error.message);
+    await loadAll(); renderEquipe(); toast("Invitation créée");
+    if (o.telephone) modal(`<div class="panel"><h3>Prévenir ${esc(o.nom)}</h3><div class="msgbox">${esc(msgInvitation(o, lien))}</div><a class="btn btn-teal btn-sm" target="_blank" rel="noopener" href="https://wa.me/${waNum(o.telephone)}?text=${encodeURIComponent(msgInvitation(o, lien))}">Envoyer sur WhatsApp</a> <button class="btn btn-ghost btn-sm" data-close>Fermer</button></div>`);
+  };
+  document.querySelectorAll("[data-rmi]").forEach(b => b.onclick = async () => { await sb.from("invitations").delete().eq("id", b.dataset.rmi); await loadAll(); renderEquipe(); });
+  document.querySelectorAll("[data-rmm]").forEach(b => b.onclick = () => confirmBox("Retirer ce membre de l'équipe ? Il n'aura plus accès aux données.", async () => { const { error } = await sb.from("membres").delete().eq("id", b.dataset.rmm); if (error) return toast(error.message); await loadAll(); renderEquipe(); }));
+  document.querySelectorAll("[data-role]").forEach(sel => sel.onchange = async () => { const { error } = await sb.from("membres").update({ role: sel.value }).eq("id", sel.dataset.role); if (error) return toast(error.message); await loadAll(); renderEquipe(); toast("Rôle modifié"); });
+}
+function msgInvitation(x, lien) {
+  return `Bonjour ${x.nom || ""},\n\n${S.tech.entreprise || S.tech.nom} vous invite sur FroidPass, notre outil de suivi de la maintenance${x.role === "admin" ? "" : " : vous y retrouverez vos interventions à réaliser"}.\n\nCréez votre compte avec l'e-mail ${x.email} ici : ${lien}\n\nVous rejoindrez automatiquement l'équipe.`;
 }

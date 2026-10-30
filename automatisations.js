@@ -48,11 +48,14 @@ async function loadData(env) {
   ]);
   const emails = {};
   for (const u of users.users || []) emails[u.id] = { email: u.email, created_at: u.created_at };
+  let membres = [], ots = [];
+  try { membres = await rest(env, "membres?select=*"); } catch {}
+  try { ots = await rest(env, "ordres_travail?select=*"); } catch {}
   let sigs = [];
   try { sigs = await rest(env, "signalements?select=statut,created_at"); } catch {}
   let clients = [];
   try { clients = await rest(env, "clients?select=id,nom"); } catch {}
-  return { techs, eqs, ints, pays, emails, clients, sigs };
+  return { techs, eqs, ints, pays, emails, clients, sigs, membres, ots };
 }
 
 function nextDue(e, ints) {
@@ -110,7 +113,9 @@ export async function runAutomatisations(env, { dryRun = false } = {}) {
   const isMonday = _d.getUTCDay() === 1;
   const SITE = (env.SITE_URL || "").replace(/\/$/, "");
   const APP = SITE + "/app";
-  const { techs, eqs, ints, pays, emails, sigs } = await loadData(env);
+  const { techs: tous, eqs, ints, pays, emails, sigs, membres, ots } = await loadData(env);
+  const estMembre = new Set(membres.map(m => m.user_id));
+  const techs = tous.filter(t => !estMembre.has(t.id)); // les membres d'une équipe ne sont pas des comptes clients
   const log = { emails: [], erreurs: [] };
 
   const actifs = techs.filter(t => t.offre !== "decouverte" && t.fin_abonnement && Date.parse(t.fin_abonnement) >= today);
@@ -167,6 +172,14 @@ export async function runAutomatisations(env, { dryRun = false } = {}) {
     }
   }
 
+  // Lundi : chaque membre d'équipe reçoit ses OT de la semaine
+  if (isMonday) for (const m of membres) {
+    const mes = ots.filter(o => o.assigne_a === m.user_id && ["planifie", "en_cours"].includes(o.statut) && (!o.date_prevue || Date.parse(o.date_prevue) < today + 8 * DAY));
+    if (!mes.length) continue;
+    const lignes = mes.map(o => `<tr><td style="padding:6px;border-bottom:1px solid #e3eef0">OT-${String(o.numero).padStart(4, "0")}</td><td style="padding:6px;border-bottom:1px solid #e3eef0">${esc(o.titre)}</td><td style="padding:6px;border-bottom:1px solid #e3eef0">${fr(o.date_prevue)}</td></tr>`).join("");
+    await send({ id: m.user_id, nom: m.nom }, "hebdo_ot", isoDay(today), `${mes.length} intervention(s) à réaliser cette semaine`, gabarit(env, `Bonjour ${esc((m.nom || "").split(" ")[0])}, votre semaine`, `<table style="width:100%;border-collapse:collapse;font-size:14px">${lignes}</table>`, "Ouvrir mon espace", APP));
+  }
+
   // ---------- Rapport au fondateur ----------
   const h24 = now - DAY;
   const nouveaux = techs.filter(t => Date.parse(t.created_at) > h24);
@@ -187,6 +200,7 @@ export async function runAutomatisations(env, { dryRun = false } = {}) {
     `📅 Encaissé ce mois : <b>${fcfa(payesMois.reduce((s, p) => s + p.montant, 0))}</b>`,
     `⏳ Expirent sous 7 j : <b>${expirent.length}</b>${expirent.length ? " — " + expirent.map(t => esc(t.nom)).join(", ") : ""}`,
     `🧊 ${eqs.length} équipements · ${ints24} intervention(s) en 24 h · ${actifsSemaine} technicien(s) actifs cette semaine`,
+    `🛠 OT ouverts : <b>${ots.filter(o => ["demande", "planifie", "en_cours"].includes(o.statut)).length}</b> · terminés en 24 h : ${ots.filter(o => o.statut === "termine" && Date.parse(o.date_fin) > h24).length} · équipes : ${new Set(membres.map(m => m.org_id)).size} (${membres.length} membres)`,
     `🚨 Signalements de panne ouverts : <b>${sigs.filter(x => x.statut !== "resolu").length}</b> (dont ${sigs.filter(x => Date.parse(x.created_at) > h24).length} en 24 h)`,
     `✉️ E-mails envoyés aujourd'hui : ${log.emails.length}${!env.BREVO_API_KEY ? " (e-mails non configurés)" : ""}`,
     log.erreurs.length ? `⚠️ Erreurs : ${log.erreurs.length}\n${log.erreurs.slice(0, 5).map(esc).join("\n")}` : null
