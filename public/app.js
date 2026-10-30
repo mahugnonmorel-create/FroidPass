@@ -109,6 +109,8 @@ async function loadAll() {
   if (S.role === "admin") { const iv = await sb.from("invitations").select("*").order("created_at", { ascending: false }); S.invitations = iv.error ? [] : iv.data; }
   const sg = await sb.from("signalements").select("*").order("created_at", { ascending: false });
   S.sigs = sg.error ? [] : sg.data;
+  S.rapports = [];
+  if (S.role === "admin") { const rp = await sb.from("rapports_envoyes").select("*").order("created_at", { ascending: false }); S.rapports = rp.error ? [] : rp.data; }
   // Module GMAO (tolérant si la mise à jour SQL n'est pas encore faite)
   const [o, pc, cs] = await Promise.all([
     sb.from("ordres_travail").select("*").order("created_at", { ascending: false }),
@@ -399,25 +401,44 @@ function renderClients() {
   $view.innerHTML = `<h1 style="font-size:28px;margin-bottom:14px">${W().Clients}</h1>
   <div class="grid2"><div class="panel">${S.clients.map(c => {
     const n = S.eqs.filter(e => e.client_id === c.id).length, st = statsSite(c);
-    return `<div class="row" style="cursor:default"><div class="ic">🏢</div><div><div class="t">${esc(c.nom)} ${st.pct == null ? "" : `<span class="pill ${st.pct >= 90 ? "p-ok" : st.pct >= 70 ? "p-warn" : "p-bad"}">${st.pct} % à jour</span>`}${st.late ? ` <span class="pill p-bad">${st.late} en retard</span>` : ""}</div><div class="m">${esc(c.contact)} · ${esc(c.whatsapp)} · ${n} équipement(s) · prochain entretien ${fr(st.prochain)}</div></div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end"><a class="btn btn-teal btn-sm" href="#rapport-${c.id}">Rapport du site</a><a class="btn btn-ghost btn-sm" href="#siteqr-${c.id}">QR du site</a>${isAdmin() ? `<button class="btn btn-ghost btn-sm" data-delcli="${c.id}" style="color:var(--bad)">Supprimer</button>` : ""}</div></div>`;
+    return `<div class="row" style="cursor:default"><div class="ic">🏢</div><div><div class="t">${esc(c.nom)} ${st.pct == null ? "" : `<span class="pill ${st.pct >= 90 ? "p-ok" : st.pct >= 70 ? "p-warn" : "p-bad"}">${st.pct} % à jour</span>`}${st.late ? ` <span class="pill p-bad">${st.late} en retard</span>` : ""}</div><div class="m">${esc(c.contact)} · ${esc(c.whatsapp)}${c.email ? " · " + esc(c.email) : ""} · ${n} équipement(s) · prochain entretien ${fr(st.prochain)}</div></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end"><a class="btn btn-teal btn-sm" href="#rapport-${c.id}">Rapport du site</a><a class="btn btn-ghost btn-sm" href="#siteqr-${c.id}">QR du site</a>${isAdmin() ? `<button class="btn btn-ghost btn-sm" data-editcli="${c.id}">Modifier</button><button class="btn btn-ghost btn-sm" data-delcli="${c.id}" style="color:var(--bad)">Supprimer</button>` : ""}</div></div>`;
   }).join("") || `<p class="empty">Aucun ${W().client} pour l'instant.</p>`}</div>
   <div class="panel" ${isAdmin() ? "" : "hidden"}><h3>${W().nouveauClient}</h3><form class="form" id="cliForm" style="grid-template-columns:1fr">
     <label>${W().nomClient}<input class="field" name="nom" placeholder="${W().phNom}" required></label>
     <label>${W().contact}<input class="field" name="contact" placeholder="M. / Mme …"></label>
     <label>${W().waContact}<input class="field" name="whatsapp" placeholder="+229 01 XX XX XX XX"></label>
+    <label>E-mail du client (pour recevoir le rapport mensuel)<input class="field" name="email" type="email" placeholder="contact@exemple.com"></label>
     <button class="btn btn-hot" type="submit">Ajouter</button></form></div></div>`;
   document.getElementById("cliForm").onsubmit = async ev => {
     ev.preventDefault(); const o = Object.fromEntries(new FormData(ev.target));
+    if (!o.email) delete o.email;
     const { error } = await sb.from("clients").insert(o);
     if (error) return toast(error.message);
     await loadAll(); renderClients(); toast(isEnt() ? "Site ajouté" : "Client ajouté");
   };
+  document.querySelectorAll("[data-editcli]").forEach(b => b.onclick = () => openEditClient(b.dataset.editcli, renderClients));
   document.querySelectorAll("[data-delcli]").forEach(b => b.onclick = () => confirmBox(`Supprimer ce ${W().client} et tous ses équipements ?`, async () => {
     const { error } = await sb.from("clients").delete().eq("id", b.dataset.delcli);
     if (error) return toast(error.message);
     await loadAll(); renderClients();
   }));
+}
+
+function openEditClient(id, apres) {
+  const c = S.clients.find(x => x.id === id); if (!c) return;
+  modal(`<div class="panel"><h3>Modifier ${esc(c.nom)}</h3><form class="form" id="ecForm" style="grid-template-columns:1fr">
+    <label>${W().nomClient}<input class="field" name="nom" value="${esc(c.nom)}" required></label>
+    <label>${W().contact}<input class="field" name="contact" value="${esc(c.contact)}"></label>
+    <label>${W().waContact}<input class="field" name="whatsapp" value="${esc(c.whatsapp)}"></label>
+    <label>E-mail du client<input class="field" name="email" type="email" value="${esc(c.email)}" placeholder="contact@exemple.com"></label>
+    <div style="display:flex;gap:8px"><button class="btn btn-hot" type="submit">Enregistrer</button><button class="btn btn-ghost" type="button" data-close>Annuler</button></div></form></div>`);
+  document.getElementById("ecForm").onsubmit = async ev => {
+    ev.preventDefault(); const o = Object.fromEntries(new FormData(ev.target)); o.email = o.email.trim() || null;
+    const { error } = await sb.from("clients").update(o).eq("id", c.id);
+    if (error) return toast(error.message);
+    modal(""); await loadAll(); apres(); toast("Modifications enregistrées");
+  };
 }
 
 function labelOffre() {
@@ -587,8 +608,8 @@ function renderRapport(clientId) {
       <select class="field" id="per" style="width:auto;padding:7px 10px"><option value="1">Mois en cours</option><option value="3">3 derniers mois</option><option value="6">6 derniers mois</option><option value="12">12 derniers mois</option></select>
       <button class="btn btn-hot btn-sm" onclick="print()">Imprimer / Enregistrer en PDF</button>
       <a class="btn btn-ghost btn-sm" href="#siteqr-${c.id}">QR du site</a>
-      ${c.whatsapp ? `<a class="btn btn-teal btn-sm" target="_blank" rel="noopener" href="https://wa.me/${waNum(c.whatsapp)}?text=${encodeURIComponent(`Bonjour ${c.contact || ""}, voici l'état de maintenance de vos équipements (${eqs.length} équipements, ${pct} % à jour) : ${siteUrl(c)}\n\nJe vous remets le rapport détaillé de ${libellePeriode} en PDF. ${S.tech.nom}`)}">Envoyer le lien au client</a>` : ""}
     </div>
+  ${isAdmin() ? panneauEnvoi(c) : ""}
   <div class="cert">
     <div class="ch"><div><div class="disp" style="font-size:26px;font-weight:800">Rapport de maintenance</div>
       <div style="font-size:18px;font-weight:600;margin-top:4px">${esc(c.nom)}</div><div class="m">Période : ${libellePeriode}</div></div>
@@ -621,6 +642,67 @@ function renderRapport(clientId) {
   </div>`;
   const sel = document.getElementById("per"); sel.value = String(periodeRapport);
   sel.onchange = () => { periodeRapport = Number(sel.value); renderRapport(clientId); };
+  if (isAdmin()) brancherEnvoi(c, clientId);
+}
+
+// ---------- Envoi du rapport mensuel au client (responsable / directeur uniquement) ----------
+let moisEnvoi = null;
+const MOIS_FR = ["janvier","février","mars","avril","mai","juin","juillet","août","septembre","octobre","novembre","décembre"];
+const listeMois = () => { const d = new Date(TODAY); return [0, 1, 2, 3, 4, 5].map(k => { const x = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - k, 1)); return { v: x.toISOString().slice(0, 7), l: `${MOIS_FR[x.getUTCMonth()]} ${x.getUTCFullYear()}` }; }); };
+const libMois = v => { const [y, m] = v.split("-").map(Number); return `${MOIS_FR[m - 1]} ${y}`; };
+const rapportUrl = (c, mois) => location.origin + "/r?c=" + (c.code_rapport || "") + "&m=" + mois;
+function resumeMois(c, mois) {
+  const [y, m] = mois.split("-").map(Number), d = Date.UTC(y, m - 1, 1), f = Date.UTC(y, m, 1);
+  const ids = S.eqs.filter(e => e.client_id === c.id).map(e => e.id);
+  const ints = S.ints.filter(i => ids.includes(i.equipement_id) && Date.parse(i.date) >= d && Date.parse(i.date) < f);
+  return { nbEq: ids.length, nbInt: ints.length, nbPrev: ints.filter(i => i.type === "preventif").length };
+}
+function panneauEnvoi(c) {
+  if (!moisEnvoi) moisEnvoi = listeMois()[0].v;
+  if (!c.code_rapport) return `<div class="panel noprint"><h3>Envoyer le rapport mensuel au client</h3><p class="m">Mise à jour de la base requise : exécutez <b>supabase/mise-a-jour-rapports.sql</b> dans Supabase pour activer l'envoi.</p></div>`;
+  const hist = (S.rapports || []).filter(r => r.client_id === c.id);
+  return `<div class="panel noprint" id="envoi"><h3>Envoyer le rapport mensuel au client</h3>
+    <p class="m" style="margin-bottom:10px">Le client reçoit un lien vers son rapport du mois (sans compte), qu'il peut consulter, imprimer ou enregistrer en PDF.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <select class="field" id="moisEnv" style="width:auto;padding:7px 10px">${listeMois().map(o => `<option value="${o.v}" ${o.v === moisEnvoi ? "selected" : ""}>${o.l}</option>`).join("")}</select>
+      <button class="btn btn-hot btn-sm" id="envMail">✉️ Envoyer par e-mail${c.email ? "" : " (ajouter l'e-mail)"}</button>
+      <button class="btn btn-teal btn-sm" id="envWa">💬 Envoyer par WhatsApp${c.whatsapp ? "" : " (ajouter le numéro)"}</button>
+      <button class="btn btn-ghost btn-sm" id="envCp">Copier le lien</button>
+      <a class="btn btn-ghost btn-sm" id="envVoir" target="_blank" rel="noopener" href="${rapportUrl(c, moisEnvoi)}">Aperçu client</a>
+    </div>
+    <p class="m" style="margin-top:8px">Destinataires : ${c.email ? "✉️ " + esc(c.email) : "e-mail non renseigné"} · ${c.whatsapp ? "💬 " + esc(c.whatsapp) : "WhatsApp non renseigné"} · <a href="javascript:void 0" id="envEdit">modifier</a></p>
+    <div style="margin-top:12px"><b style="font-size:14px">Historique des envois</b>${hist.length ? `<table class="tbl" style="margin-top:6px"><tr><th>Date</th><th>Mois</th><th>Canal</th><th>Destinataire</th><th>Envoyé par</th></tr>${hist.slice(0, 12).map(r => `<tr><td class="mono">${fr(r.created_at)}</td><td>${libMois(r.mois)}</td><td>${r.canal === "email" ? "✉️ E-mail" : "💬 WhatsApp"}</td><td>${esc(r.destinataire)}</td><td>${esc(r.envoye_par_nom)}</td></tr>`).join("")}</table>` : `<p class="m">Aucun rapport envoyé à ce ${W().client} pour l'instant.</p>`}</div></div>`;
+}
+async function journaliserEnvoi(c, canal, destinataire) {
+  const { error } = await sb.from("rapports_envoyes").insert({ client_id: c.id, mois: moisEnvoi, canal, destinataire, envoye_par: S.user.id, envoye_par_nom: (S.me || S.tech).nom || "" });
+  if (error) console.warn(error.message);
+}
+function brancherEnvoi(c, clientId) {
+  const $ = id => document.getElementById(id); if (!$("envoi")) return;
+  const rerender = () => renderRapport(clientId);
+  $("moisEnv").onchange = ev => { moisEnvoi = ev.target.value; $("envVoir").href = rapportUrl(c, moisEnvoi); };
+  $("envEdit").onclick = () => openEditClient(c.id, rerender);
+  $("envCp").onclick = async () => { try { await navigator.clipboard.writeText(rapportUrl(c, moisEnvoi)); toast("Lien du rapport copié"); } catch { toast(rapportUrl(c, moisEnvoi)); } };
+  $("envWa").onclick = async () => {
+    if (!c.whatsapp) return openEditClient(c.id, rerender);
+    const r = resumeMois(c, moisEnvoi), qui = (S.me || S.tech).nom;
+    const txt = `Bonjour ${c.contact || ""},\n\nVoici le rapport de maintenance de ${libMois(moisEnvoi)} pour ${c.nom} : ${r.nbEq} équipement(s) suivis, ${r.nbInt} intervention(s) dont ${r.nbPrev} préventive(s).\n\nRapport complet (consultable et imprimable en PDF) :\n${rapportUrl(c, moisEnvoi)}\n\nCordialement,\n${qui}${S.tech.entreprise ? " — " + S.tech.entreprise : ""}`;
+    window.open(`https://wa.me/${waNum(c.whatsapp)}?text=${encodeURIComponent(txt)}`, "_blank", "noopener");
+    await journaliserEnvoi(c, "whatsapp", c.whatsapp); await loadAll(); rerender(); toast("WhatsApp ouvert · envoi enregistré dans l'historique");
+  };
+  $("envMail").onclick = () => {
+    if (!c.email) return openEditClient(c.id, rerender);
+    confirmBox(`Envoyer le rapport de <b>${libMois(moisEnvoi)}</b> à <b>${esc(c.email)}</b> ?`, async () => {
+      const btn = $("envMail"); if (btn) { btn.disabled = true; btn.textContent = "Envoi…"; }
+      try {
+        const { data: { session } } = await sb.auth.getSession();
+        const res = await fetch("/api/envoyer-rapport", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + session.access_token }, body: JSON.stringify({ client_id: c.id, mois: moisEnvoi }) });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(j.error || "Envoi impossible");
+        await loadAll(); rerender(); toast("Rapport envoyé à " + j.destinataire);
+      } catch (e) { toast(e.message); if (btn) { btn.disabled = false; btn.textContent = "✉️ Envoyer par e-mail"; } }
+    });
+  };
 }
 
 const siteUrl = c => location.origin + "/s.html?c=" + (c.code_public || "");
