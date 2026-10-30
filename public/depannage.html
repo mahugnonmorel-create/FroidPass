@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codes erreur climatisation et dépannage : Gree, LG, Samsung, Daikin, Midea — FroidPass</title>
+<meta name="description" content="Signification des codes erreur de climatiseurs Gree, LG, Samsung, Daikin et Midea (E1, E6, CH05, E101, U4…), causes probables, vérifications à faire et diagnostic par symptôme pour split, multi-split, gainable, cassette, CTA, chambre froide.">
+<link rel="canonical" href="https://froidpasss.mahugnonmorel.workers.dev/depannage">
+<meta property="og:title" content="Codes erreur climatisation et guide de dépannage — FroidPass">
+<meta property="og:description" content="Gree, LG, Samsung, Daikin, Midea : signification des codes, causes, vérifications, diagnostic par symptôme.">
+<meta property="og:image" content="https://froidpasss.mahugnonmorel.workers.dev/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="icon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=IBM+Plex+Mono:wght@400;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css?v=4">
+<script src="depannage-data.js?v=1"></script>
+<style>
+.dp{max-width:900px;margin:0 auto;padding:24px 18px 70px}
+.dp h1{font-size:clamp(28px,4.5vw,40px);font-weight:800;margin-bottom:8px}
+.dp h2{font-size:22px;font-weight:800;margin:30px 0 10px}
+.search{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;margin:16px 0}
+@media(max-width:620px){.search{grid-template-columns:1fr}}
+.res{background:#fff;border:1px solid var(--line);border-left:5px solid var(--heat);border-radius:12px;padding:18px 20px;margin:12px 0}
+.res h3{font-size:20px;margin-bottom:6px}
+.res ol,.res ul{padding-left:20px;margin:6px 0 10px}.res li{margin:4px 0;color:#24404d}
+.tag{display:inline-block;font-size:12.5px;font-weight:600;background:var(--ice);border-radius:999px;padding:3px 10px;margin:2px 4px 2px 0}
+.warn{background:#fff4ec;border:1px solid #ffd3bf;color:#7a2f0e;border-radius:12px;padding:14px 16px;margin:14px 0;font-size:14.5px}
+details.sy{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px 16px;margin:8px 0}
+details.sy summary{cursor:pointer;font-weight:600}
+.codes{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+.codes button{border:1.5px solid var(--line);background:#fff;border-radius:8px;padding:5px 9px;cursor:pointer;font-family:"IBM Plex Mono";font-size:13px}
+.codes button:hover{border-color:var(--teal)}
+</style>
+</head>
+<body>
+<nav class="top noprint"><div class="wrap">
+  <a class="logo" href="/"><i>✳</i>FroidPass</a>
+  <div class="menu"><a href="/">Accueil</a><a href="/depannage" class="cur">Dépannage</a><a href="app.html">Espace technicien</a></div>
+</div></nav>
+<div class="dp">
+  <h1>Codes erreur climatisation et guide de dépannage</h1>
+  <p class="m" style="font-size:16.5px">Split, multi-split, gainable, cassette, VRV, CTA, groupe d'eau glacée, chambre froide. Trouvez la signification d'un code, les causes probables et les vérifications à faire, dans l'ordre.</p>
+
+  <div class="warn"><b>⚠ Sécurité avant tout.</b> Consignation électrique avant toute intervention sur les borniers et cartes (NF C 18-510, habilitation adaptée). EPI : gants, lunettes, chaussures de sécurité. La manipulation des fluides frigorigènes est réservée aux techniciens titulaires d'une attestation de capacité ; R32 et R290 sont inflammables. Les codes varient selon la série et le modèle : <b>confirmez toujours avec le manuel de service avant de remplacer une pièce.</b></div>
+
+  <h2>1. Rechercher un code erreur</h2>
+  <div class="search">
+    <select class="field" id="marque"></select>
+    <input class="field mono" id="code" placeholder="Code : E6, CH05, E101, U4…" autocomplete="off">
+    <button class="btn btn-hot" id="go">Rechercher</button>
+  </div>
+  <div class="codes" id="liste"></div>
+  <div id="resultat"></div>
+
+  <h2>2. Diagnostic par symptôme</h2>
+  <p class="m">Méthode : mesurer avant de remplacer, et rechercher la cause racine pour éviter que la panne revienne.</p>
+  <div id="symptomes"></div>
+
+  <h2>3. Manuels officiels</h2>
+  <ul id="manuels" style="padding-left:20px"></ul>
+
+  <div class="panel" style="background:var(--ink);color:#eaf7f9;border:0;margin-top:30px">
+    <h3 style="color:#fff">Gardez la trace de chaque dépannage</h3>
+    <p style="color:#a9c9d0">Avec FroidPass, chaque intervention, mesure et code erreur est enregistré dans le carnet QR de l'équipement. Vos clients voient votre travail, et vous retrouvez l'historique à la prochaine panne.</p>
+    <a class="btn btn-hot" style="margin-top:10px" href="app.html#inscription">Créer mon compte gratuit</a>
+  </div>
+  <p class="m" style="margin-top:20px">Sources des codes : documentation des fabricants et manuels de service, citées sous chaque résultat. Informations données à titre indicatif.</p>
+</div>
+<script>
+const esc = s => String(s ?? "").replace(/[&<>"']/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));
+const $m = document.getElementById("marque"), $c = document.getElementById("code"), $r = document.getElementById("resultat");
+$m.innerHTML = Object.keys(MARQUES).map(k => `<option>${k}</option>`).join("") + `<option value="*">Toutes les marques</option>`;
+function liste() {
+  const k = $m.value;
+  document.getElementById("liste").innerHTML = k === "*" ? "" : Object.keys(MARQUES[k].codes).map(c => `<button data-c="${c}">${c}</button>`).join("");
+}
+function fiche(marque, code) {
+  const M = MARQUES[marque], d = M.codes[code], F = FAMILLES[d[1]];
+  return `<div class="res"><h3>${esc(marque)} ${esc(code)} — ${esc(d[0])}</h3>
+    <span class="tag">${esc(F.nom)}</span><span class="tag">Intervention : ${esc(F.niveau)}</span>
+    ${M.note ? `<p class="m" style="margin-top:8px">ℹ ${esc(M.note)}</p>` : ""}
+    <p style="margin-top:10px"><b>Causes probables</b> (de la plus fréquente à la moins fréquente)</p><ul>${F.causes.map(x => `<li>${esc(x)}</li>`).join("")}</ul>
+    <p><b>Vérifications, dans l'ordre</b></p><ol>${F.verifs.map(x => `<li>${esc(x)}</li>`).join("")}</ol>
+    <p><b>Cause racine</b> : ${esc(F.racine)}</p>
+    <p class="m" style="margin-top:8px">Source : ${M.src.map(s => `<a href="${s.u}" target="_blank" rel="noopener">${esc(s.t)}</a>`).join(" · ")}</p></div>`;
+}
+function chercher() {
+  const code = $c.value.trim().toUpperCase().replace(/\s/g, ""), k = $m.value;
+  if (!code) { $r.innerHTML = ""; return; }
+  const marques = k === "*" ? Object.keys(MARQUES) : [k];
+  const hits = marques.filter(m => MARQUES[m].codes[code]);
+  $r.innerHTML = hits.length ? hits.map(m => fiche(m, code)).join("") + (hits.length > 1 ? `<p class="m">Le même code a une signification différente selon la marque : vérifiez la marque de l'appareil.</p>` : "")
+    : `<div class="res" style="border-left-color:var(--mute)"><h3>Code ${esc(code)} non trouvé ${k === "*" ? "" : "pour " + esc(k)}</h3><p class="m">Ce code n'est pas encore dans la base, ou il est propre à ce modèle. Consultez le manuel de service (section 3) et utilisez le diagnostic par symptôme ci-dessous.</p></div>`;
+  try { history.replaceState(null, "", `?marque=${encodeURIComponent(k)}&code=${encodeURIComponent(code)}`); } catch {}
+}
+$m.onchange = () => { liste(); if ($c.value) chercher(); };
+document.getElementById("go").onclick = chercher;
+$c.onkeydown = e => { if (e.key === "Enter") chercher(); };
+document.getElementById("liste").onclick = e => { const b = e.target.closest("[data-c]"); if (b) { $c.value = b.dataset.c; chercher(); } };
+document.getElementById("symptomes").innerHTML = SYMPTOMES.map(s => `<details class="sy"><summary>${esc(s.t)} <span class="m" style="font-weight:400">· ${s.e.map(esc).join(", ")}</span></summary>
+  <p style="margin-top:10px"><b>À mesurer d'abord</b></p><ul style="padding-left:20px">${s.m.map(x => `<li>${esc(x)}</li>`).join("")}</ul>
+  <p style="margin-top:8px"><b>Causes probables</b></p><ol style="padding-left:20px">${s.c.map(x => `<li>${esc(x)}</li>`).join("")}</ol></details>`).join("");
+document.getElementById("manuels").innerHTML = MANUELS.map(x => `<li><b>${esc(x.m)}</b> : <a href="${x.u}" target="_blank" rel="noopener">${esc(x.t)}</a></li>`).join("");
+const q = new URLSearchParams(location.search);
+if (q.get("marque") && (MARQUES[q.get("marque")] || q.get("marque") === "*")) $m.value = q.get("marque");
+liste();
+if (q.get("code")) { $c.value = q.get("code"); chercher(); }
+</script>
+</body>
+</html>

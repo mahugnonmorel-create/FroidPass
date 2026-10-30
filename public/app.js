@@ -269,6 +269,7 @@ function renderEq(id) {
         <div style="display:flex;flex-direction:column;gap:8px">
           <a class="btn btn-ghost btn-sm" href="${publicUrl(e.code_public)}" target="_blank" rel="noopener">Voir le carnet public</a>
           <a class="btn btn-ghost btn-sm" href="#cert-${e.id}">Certificat d'entretien</a>
+          <a class="btn btn-ghost btn-sm" href="/depannage?marque=${encodeURIComponent(["Gree","LG","Samsung","Daikin","Midea"].find(m => (e.marque || "").toLowerCase().includes(m.toLowerCase())) || "*")}">Dépannage / codes erreur</a>
           <button class="btn btn-teal btn-sm" data-relance="${e.id}">Relance WhatsApp</button>
           <button class="btn btn-ghost btn-sm" id="delEq" style="color:var(--bad)">Supprimer</button></div></div></div>
       ${sigsHTML(S.sigs.filter(x => x.equipement_id === e.id && x.statut !== "resolu"))}
