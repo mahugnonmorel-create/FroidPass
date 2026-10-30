@@ -379,6 +379,9 @@ revoke insert on public.membres from authenticated;  -- les membres sont créés
 -- Périodes : mensuel 'AAAA-MM', trimestriel 'AAAA-T1..T4', semestriel 'AAAA-S1/S2', annuel 'AAAA'
 -- =====================================================================
 
+-- Photos des interventions (la colonne est aussi créée par mise-a-jour-photos.sql)
+alter table public.interventions add column if not exists photos jsonb not null default '[]'::jsonb;
+
 -- E-mail du client et code secret du rapport (différent du QR affiché sur le site)
 alter table public.clients add column if not exists email text not null default '';
 alter table public.clients add column if not exists code_rapport text;
@@ -438,7 +441,7 @@ begin
       order by e.zone, e.emplacement) from public.equipements e where e.client_id = c.id), '[]'::json),
     'interventions', coalesce((select json_agg(json_build_object(
         'date', i.date, 'type', i.type, 'equipement', e.emplacement, 'observations', i.observations,
-        'hp', i.hp, 'bp', i.bp, 'intensite', i.intensite, 't_soufflage', i.t_soufflage, 't_reprise', i.t_reprise) order by i.date)
+        'hp', i.hp, 'bp', i.bp, 'intensite', i.intensite, 't_soufflage', i.t_soufflage, 't_reprise', i.t_reprise, 'photos', i.photos) order by i.date)
       from public.interventions i join public.equipements e on e.id = i.equipement_id
       where e.client_id = c.id and i.date >= d and i.date < f), '[]'::json),
     'signalements', (select count(*) from public.signalements s join public.equipements e on e.id = s.equipement_id where e.client_id = c.id and s.created_at >= d and s.created_at < f)
@@ -446,3 +449,28 @@ begin
 end $$;
 revoke all on function public.get_rapport(text, text) from public;
 grant execute on function public.get_rapport(text, text) to anon, authenticated;
+
+-- =====================================================================
+-- FroidPass — Photos des pièces (défectueuses / remplacées) dans les interventions
+-- =====================================================================
+-- Chaque intervention garde une liste de photos : [{ "path": "...", "categorie": "defectueuse|remplacee|avant|apres|autre", "legende": "..." }]
+alter table public.interventions add column if not exists photos jsonb not null default '[]'::jsonb;
+
+-- Espace de stockage des photos (Supabase Storage). Fichiers en lecture publique par lien
+-- (noms aléatoires non devinables), pour que le client voie les photos dans son rapport sans compte.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('photos', 'photos', true, 3145728, array['image/jpeg','image/png','image/webp'])
+on conflict (id) do update set public = true, file_size_limit = 3145728, allowed_mime_types = array['image/jpeg','image/png','image/webp'];
+
+-- Dépôt : tout membre de l'organisation, uniquement dans le dossier de son organisation
+drop policy if exists photos_insert on storage.objects;
+create policy photos_insert on storage.objects for insert to authenticated
+  with check (bucket_id = 'photos' and (storage.foldername(name))[1] = public.mon_org()::text);
+-- Lecture via l'API (aperçus dans l'application) : membres de l'organisation
+drop policy if exists photos_select on storage.objects;
+create policy photos_select on storage.objects for select to authenticated
+  using (bucket_id = 'photos' and (storage.foldername(name))[1] = public.mon_org()::text);
+-- Suppression : responsable / directeur uniquement
+drop policy if exists photos_delete on storage.objects;
+create policy photos_delete on storage.objects for delete to authenticated
+  using (bucket_id = 'photos' and (storage.foldername(name))[1] = public.mon_org()::text and public.est_admin());

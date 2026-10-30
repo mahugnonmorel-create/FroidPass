@@ -43,6 +43,7 @@ export async function envoyerRapport(request, env) {
   const me = (await pg(env, `techniciens?id=eq.${user.id}&select=nom`))[0];
   const pr = r.prestataire || {}, libelle = P.lib;
   const ints = r.interventions || [], prev = ints.filter(i => i.type === "preventif").length;
+  const nbPhotos = ints.reduce((n, i) => n + (Array.isArray(i.photos) ? i.photos.length : 0), 0);
   const lien = `${(env.SITE_URL || new URL(request.url).origin).replace(/\/$/, "")}/r?c=${c.code_rapport}&m=${mois}`;
   const expediteur = pr.entreprise || pr.nom || "Votre service maintenance";
   const kpi = (v, l) => `<td style="border:1px solid #e3e8ec;border-radius:8px;padding:10px;text-align:center"><div style="font-size:22px;font-weight:800">${v}</div><div style="font-size:12px;color:#5b6b75">${l}</div></td>`;
@@ -58,7 +59,8 @@ export async function envoyerRapport(request, env) {
         <p>Bonjour ${esc(c.contact || "")},</p><p>Veuillez trouver ci-dessous la synthèse de la maintenance de vos équipements pour la période : ${esc(libelle)}.</p>
         <table style="width:100%;border-collapse:separate;border-spacing:6px"><tr>${kpi((r.equipements || []).length, "équipements suivis")}${kpi(ints.length, "interventions")}${kpi(prev, "préventives")}${kpi(r.signalements, "pannes signalées")}</tr></table>
         <p style="text-align:center;margin:22px 0"><a href="${lien}" style="background:#ff6a3d;color:#fff;padding:12px 22px;border-radius:999px;text-decoration:none;font-weight:bold">Consulter le rapport complet</a></p>
-        <p style="font-size:13px;color:#5b6b75">Le rapport détaillé (interventions, mesures, état du parc, prochains entretiens) peut être imprimé ou enregistré en PDF depuis ce lien.</p>
+        ${nbPhotos ? `<p style="font-size:14px">📷 ${nbPhotos} photo(s) des pièces défectueuses et remplacées sont incluses dans le rapport.</p>` : ""}
+        <p style="font-size:13px;color:#5b6b75">Le rapport détaillé (interventions, mesures, photos, état du parc, prochains entretiens) peut être imprimé ou enregistré en PDF depuis ce lien.</p>
         <p>Cordialement,<br><b>${esc(me?.nom || pr.nom)}</b><br>${esc(expediteur)} ${esc(pr.whatsapp || "")}</p>
         <p style="font-size:11px;color:#9aa7ae">Envoyé avec FroidPass</p></div>`
     })

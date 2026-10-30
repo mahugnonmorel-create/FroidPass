@@ -3,6 +3,9 @@
 -- Périodes : mensuel 'AAAA-MM', trimestriel 'AAAA-T1..T4', semestriel 'AAAA-S1/S2', annuel 'AAAA'
 -- =====================================================================
 
+-- Photos des interventions (la colonne est aussi créée par mise-a-jour-photos.sql)
+alter table public.interventions add column if not exists photos jsonb not null default '[]'::jsonb;
+
 -- E-mail du client et code secret du rapport (différent du QR affiché sur le site)
 alter table public.clients add column if not exists email text not null default '';
 alter table public.clients add column if not exists code_rapport text;
@@ -62,7 +65,7 @@ begin
       order by e.zone, e.emplacement) from public.equipements e where e.client_id = c.id), '[]'::json),
     'interventions', coalesce((select json_agg(json_build_object(
         'date', i.date, 'type', i.type, 'equipement', e.emplacement, 'observations', i.observations,
-        'hp', i.hp, 'bp', i.bp, 'intensite', i.intensite, 't_soufflage', i.t_soufflage, 't_reprise', i.t_reprise) order by i.date)
+        'hp', i.hp, 'bp', i.bp, 'intensite', i.intensite, 't_soufflage', i.t_soufflage, 't_reprise', i.t_reprise, 'photos', i.photos) order by i.date)
       from public.interventions i join public.equipements e on e.id = i.equipement_id
       where e.client_id = c.id and i.date >= d and i.date < f), '[]'::json),
     'signalements', (select count(*) from public.signalements s join public.equipements e on e.id = s.equipement_id where e.client_id = c.id and s.created_at >= d and s.created_at < f)

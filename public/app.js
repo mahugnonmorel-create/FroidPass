@@ -122,6 +122,67 @@ async function loadAll() {
   S.tech = t.data; S.clients = c.data; S.eqs = e.data; S.ints = i.data; S.pays = p.data;
 }
 
+// =====================================================================
+// PHOTOS DES PIÈCES (défectueuses / remplacées) — compressées puis stockées dans Supabase Storage
+// =====================================================================
+const PHOTO_CAT = { defectueuse: ["Pièce défectueuse", "p-bad"], remplacee: ["Pièce remplacée (neuve)", "p-ok"], avant: ["Avant intervention", "p-warn"], apres: ["Après intervention", "p-ok"], autre: ["Autre", ""] };
+const MAX_PHOTOS = 6;
+const photoUrl = p => CFG.SUPABASE_URL + "/storage/v1/object/public/photos/" + p.split("/").map(encodeURIComponent).join("/");
+function photosHTML(list) {
+  if (!Array.isArray(list) || !list.length) return "";
+  return `<div class="ph-grid">${list.map(ph => { const c = PHOTO_CAT[ph.categorie] || PHOTO_CAT.autre; return `<figure><a href="${photoUrl(ph.path)}" target="_blank" rel="noopener"><img loading="lazy" src="${photoUrl(ph.path)}" alt="${esc(c[0])}"></a><figcaption><span class="pill ${c[1]}">${c[0]}</span>${ph.legende ? " " + esc(ph.legende) : ""}</figcaption></figure>`; }).join("")}</div>`;
+}
+const photosChampHTML = () => `<div class="full ph-champ"><b style="font-size:14px">📷 Photos des pièces</b> <span class="m">(pièce défectueuse, pièce remplacée, avant / après · ${MAX_PHOTOS} max · compressées automatiquement)</span>
+  <div class="ph-list"></div><label class="btn btn-ghost btn-sm" style="cursor:pointer;margin-top:6px">+ Ajouter des photos<input type="file" accept="image/*" multiple hidden></label></div>`;
+// Branche le champ photos d'un formulaire ; renvoie une fonction qui téléverse et donne la liste à enregistrer
+function brancherPhotos(form, equipementId) {
+  const box = form.querySelector(".ph-champ"); if (!box) return async () => [];
+  const items = [], list = box.querySelector(".ph-list"), input = box.querySelector("input[type=file]");
+  const draw = () => {
+    list.innerHTML = items.map((it, k) => `<div class="ph-in" data-k="${k}"><img src="${it.url}" alt=""><select class="field" data-cat>${Object.entries(PHOTO_CAT).map(([v, [l]]) => `<option value="${v}" ${v === it.categorie ? "selected" : ""}>${l}</option>`).join("")}</select><input class="field" data-leg placeholder="Légende (ex. condensateur 35 µF gonflé)" value="${esc(it.legende)}"><button type="button" class="btn btn-ghost btn-sm" data-rmph>✕</button></div>`).join("");
+    box.querySelector("label.btn").hidden = items.length >= MAX_PHOTOS;
+  };
+  input.onchange = () => {
+    for (const f of [...input.files]) {
+      if (items.length >= MAX_PHOTOS) { toast(`${MAX_PHOTOS} photos maximum par intervention`); break; }
+      if (!f.type.startsWith("image/")) continue;
+      const prec = items[items.length - 1];
+      items.push({ file: f, url: URL.createObjectURL(f), categorie: prec?.categorie === "defectueuse" ? "remplacee" : "defectueuse", legende: "" });
+    }
+    input.value = ""; draw();
+  };
+  list.oninput = list.onchange = ev => { const row = ev.target.closest(".ph-in"); if (!row) return; const it = items[row.dataset.k]; if (ev.target.matches("[data-cat]")) it.categorie = ev.target.value; if (ev.target.matches("[data-leg]")) it.legende = ev.target.value.slice(0, 140); };
+  list.onclick = ev => { if (!ev.target.matches("[data-rmph]")) return; items.splice(ev.target.closest(".ph-in").dataset.k, 1); draw(); };
+  return async () => {
+    const out = [];
+    for (const [k, it] of items.entries()) {
+      toast(`Envoi des photos… ${k + 1}/${items.length}`);
+      const blob = await compresserImage(it.file);
+      const path = `${S.orgId}/${equipementId || "sans-equipement"}/${crypto.randomUUID()}.jpg`;
+      const { error } = await sb.storage.from("photos").upload(path, blob, { contentType: "image/jpeg" });
+      if (error) throw new Error("Envoi de la photo impossible : " + error.message + (/bucket|not found/i.test(error.message) ? " (exécutez la mise à jour SQL des photos dans Supabase)" : ""));
+      out.push({ path, categorie: it.categorie, legende: it.legende.trim() });
+    }
+    return out;
+  };
+}
+async function compresserImage(file, max = 1280, qualite = 0.72) {
+  let img;
+  try { img = await createImageBitmap(file); }
+  catch { img = await new Promise((ok, ko) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => ko(new Error("Format de photo non pris en charge (utilisez JPEG ou PNG)")); i.src = URL.createObjectURL(file); }); }
+  const r = Math.min(1, max / Math.max(img.width, img.height)), cv = document.createElement("canvas");
+  cv.width = Math.round(img.width * r); cv.height = Math.round(img.height * r);
+  cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+  return new Promise((ok, ko) => cv.toBlob(b => b ? ok(b) : ko(new Error("Compression de la photo impossible")), "image/jpeg", qualite));
+}
+async function supprimerPhotos(list) { if (Array.isArray(list) && list.length) await sb.storage.from("photos").remove(list.map(p => p.path)).catch(() => {}); }
+// Section « Photos des pièces » pour les rapports (une ligne par intervention qui a des photos)
+function sectionPhotos(ints, nomEq, titre) {
+  const l = ints.filter(i => Array.isArray(i.photos) && i.photos.length);
+  if (!l.length) return "";
+  return `<h3 style="font-size:17px;margin-top:22px">${titre}</h3>${l.map(i => `<div class="ph-bloc"><div style="font-size:13.5px;font-weight:600;margin-top:8px">${fr(i.date)} · ${esc(nomEq(i))} · ${i.type === "preventif" ? "Préventif" : "Curatif"}</div>${photosHTML(i.photos)}</div>`).join("")}`;
+}
+
 // ---------- Routage ----------
 async function route() {
   if (!configured) return renderNotConfigured();
@@ -294,6 +355,7 @@ function renderEq(id) {
         <label>T soufflage (°C)<input class="field mono" name="t_soufflage" inputmode="decimal"></label>
         <label>T reprise (°C)<input class="field mono" name="t_reprise" inputmode="decimal"></label>
         <label class="full">Observations<textarea class="field" name="observations" rows="2"></textarea></label>
+        ${photosChampHTML()}
         <div class="full"><button class="btn btn-hot" type="submit">Enregistrer l'intervention</button></div>
       </form>
     </div>
@@ -310,19 +372,22 @@ function renderEq(id) {
       <div class="panel"><h3>Historique</h3><div class="hist">${list.length ? list.map(x => `
         <div class="it"><b class="mono" style="font-size:13.5px">${fr(x.date)}</b> · <b>${x.type === "preventif" ? "Préventif" : "Curatif"}</b>
           <button class="btn btn-sm noprint" style="padding:0 6px;color:var(--mute);background:none" data-delint="${x.id}" title="Supprimer" ${isAdmin() ? "" : "hidden"}>✕</button>
-          <div class="m">${esc(x.observations)}</div>${measHTML(x)}${flags(x).map(f => `<div class="flag">⚠ ${f}</div>`).join("")}</div>`).join("")
+          <div class="m">${esc(x.observations)}</div>${measHTML(x)}${photosHTML(x.photos)}${flags(x).map(f => `<div class="flag">⚠ ${f}</div>`).join("")}</div>`).join("")
         : `<p class="empty">Aucune intervention.</p>`}</div></div>
     </div>
   </div>`;
   if (window.QRCode) new QRCode(document.getElementById("qr"), { text: publicUrl(e.code_public), width: 128, height: 128, colorDark: "#0b2230", colorLight: "#ffffff" });
   document.getElementById("parse").onclick = parseDict;
+  const envoyerPhotos = brancherPhotos(document.getElementById("intForm"), e.id);
   document.getElementById("intForm").onsubmit = async ev => {
     ev.preventDefault();
-    const o = Object.fromEntries(new FormData(ev.target));
+    const o = Object.fromEntries([...new FormData(ev.target)].filter(([k]) => !k.startsWith("ph")));
     for (const k of ["hp", "bp", "intensite", "t_soufflage", "t_reprise"]) o[k] = o[k] === "" ? null : Number(String(o[k]).replace(",", "."));
-    const b = ev.target.querySelector("button"); b.disabled = true;
-    const { error } = await sb.from("interventions").insert({ ...o, equipement_id: e.id });
-    if (error) { toast(error.message); b.disabled = false; return; }
+    const b = ev.target.querySelector("button[type=submit]"); b.disabled = true;
+    let photos = [];
+    try { photos = await envoyerPhotos(); } catch (err) { toast(err.message); b.disabled = false; return; }
+    const { error } = await sb.from("interventions").insert({ ...o, equipement_id: e.id, ...(photos.length ? { photos } : {}) });
+    if (error) { await supprimerPhotos(photos); toast(error.message); b.disabled = false; return; }
     await loadAll(); renderEq(e.id); toast("Intervention enregistrée · prochain entretien recalculé");
   };
   if (document.getElementById("delEq")) document.getElementById("delEq").onclick = () => confirmBox(`Supprimer « ${esc(e.emplacement)} » et tout son historique ?`, async () => {
@@ -330,9 +395,11 @@ function renderEq(id) {
     if (error) return toast(error.message);
     await loadAll(); location.hash = "parc"; toast("Équipement supprimé");
   });
-  document.querySelectorAll("[data-delint]").forEach(btn => btn.onclick = () => confirmBox("Supprimer cette intervention ?", async () => {
+  document.querySelectorAll("[data-delint]").forEach(btn => btn.onclick = () => confirmBox("Supprimer cette intervention (et ses photos) ?", async () => {
+    const ph = (S.ints.find(x => x.id === btn.dataset.delint) || {}).photos;
     const { error } = await sb.from("interventions").delete().eq("id", btn.dataset.delint);
     if (error) return toast(error.message);
+    await supprimerPhotos(ph);
     await loadAll(); renderEq(e.id);
   }));
 }
@@ -630,6 +697,8 @@ function renderRapport(clientId) {
     <h3 style="font-size:17px;margin-top:22px">3. Interventions de la période</h3>
     <table><tr><th>Date</th><th>Équipement</th><th>Type</th><th>Mesures</th><th>Observations</th></tr>
     ${intsPeriode.map(x => `<tr><td class="mono">${fr(x.date)}</td><td>${esc(eqOf(x.equipement_id).emplacement)}</td><td>${x.type === "preventif" ? "Préventif" : "Curatif"}</td><td class="mono" style="font-size:12px">${[x.hp != null && "HP " + x.hp, x.bp != null && "BP " + x.bp, x.intensite != null && "I " + x.intensite + " A", x.t_soufflage != null && "Ts " + x.t_soufflage + " °C", x.t_reprise != null && "Tr " + x.t_reprise + " °C"].filter(Boolean).join(" · ") || "—"}</td><td>${esc(x.observations)}</td></tr>`).join("") || `<tr><td colspan="5">Aucune intervention sur la période</td></tr>`}</table>
+
+    ${sectionPhotos(intsPeriode, i => eqOf(i.equipement_id).emplacement, "Photos des pièces défectueuses et remplacées")}
 
     <h3 style="font-size:17px;margin-top:22px">4. Anomalies et recommandations</h3>
     ${anomalies.length ? `<table><tr><th>Date</th><th>Équipement</th><th>Constat / recommandation</th></tr>${anomalies.map(({ i, f }) => `<tr><td class="mono">${fr(i.date)}</td><td>${esc(eqOf(i.equipement_id).emplacement)}</td><td>${f}</td></tr>`).join("")}</table>` : `<p style="font-size:14px">Aucune anomalie relevée sur la période.</p>`}
@@ -970,6 +1039,7 @@ function renderOTDetail(id) {
       </tbody></table>
       ${o.description ? `<p style="margin-top:12px"><b>Description</b><br>${esc(o.description)}</p>` : ""}
       ${o.compte_rendu ? `<p style="margin-top:12px"><b>Compte rendu</b><br>${esc(o.compte_rendu)}</p>` : ""}
+      ${photosHTML((S.ints.find(i => i.id === o.intervention_id) || {}).photos)}
     </div>
     <div id="otAction"></div>
   </div><div>
@@ -1019,25 +1089,29 @@ function formTerminer(o) {
     <label>Durée (heures)<input class="field" name="duree_heures" type="number" step="0.5" min="0" value="${heures}"></label>
     <label>Coût main d'œuvre (FCFA)<input class="field" name="cout_main_oeuvre" type="number" min="0" step="500" value="0"></label>
     <div class="full"><b style="font-size:14px">Pièces utilisées</b> <span class="m">(décomptées automatiquement du stock)</span><div id="pls" style="margin-top:6px">${S.pieces.length ? ligneP() : `<p class="m">Aucune pièce en stock. <a href="#stock">Ajouter des pièces</a></p>`}</div>${S.pieces.length ? `<button type="button" class="btn btn-ghost btn-sm" id="addP">+ Ajouter une pièce</button>` : ""}</div>
+    ${e ? photosChampHTML() : ""}
     <div class="full"><button class="btn btn-hot" type="submit">Clôturer l'OT</button></div></form></div>`;
   const pls = document.getElementById("pls");
   if (document.getElementById("addP")) document.getElementById("addP").onclick = () => pls.insertAdjacentHTML("beforeend", ligneP());
   pls.onclick = ev => { if (ev.target.matches("[data-rm]")) ev.target.closest(".pl").remove(); };
   document.getElementById("otAction").scrollIntoView({ behavior: "smooth" });
+  const envoyerPhotos = brancherPhotos(document.getElementById("fEnd"), e?.id);
   document.getElementById("fEnd").onsubmit = async ev => {
     ev.preventDefault(); const b = ev.target.querySelector("button[type=submit]"); b.disabled = true;
     const f = Object.fromEntries(new FormData(ev.target)), num = k => f[k] === "" || f[k] == null ? null : Number(String(f[k]).replace(",", "."));
     try {
+      // 0. Photos des pièces (téléversées en premier : rien n'est enregistré si l'envoi échoue)
+      const photos = e ? await envoyerPhotos() : [];
       // 1. Pièces consommées
       const lignes = [...pls.querySelectorAll(".pl")].map(l => ({ piece_id: l.querySelector("[name=piece]").value, quantite: Number(l.querySelector("[name=qte]").value) })).filter(l => l.piece_id && l.quantite > 0);
       if (lignes.length) {
         const { error } = await sb.from("consommations").insert(lignes.map(l => ({ ...l, ordre_id: o.id, prix_unitaire: S.pieces.find(p => p.id === l.piece_id).prix_unitaire })));
         if (error) throw error;
       }
-      // 2. Historique de l'équipement (carnet QR)
+      // 2. Historique de l'équipement (carnet QR), avec les photos des pièces
       let intervention_id = null;
       if (e) {
-        const { data, error } = await sb.from("interventions").insert({ equipement_id: e.id, date: iso(TODAY), type: ["preventif", "inspection"].includes(o.type) ? "preventif" : "curatif", observations: `${otNum(o)} — ${f.compte_rendu}`, hp: num("hp"), bp: num("bp"), intensite: num("intensite"), t_soufflage: num("t_soufflage"), t_reprise: num("t_reprise") }).select().single();
+        const { data, error } = await sb.from("interventions").insert({ ...(photos.length ? { photos } : {}), equipement_id: e.id, date: iso(TODAY), type: ["preventif", "inspection"].includes(o.type) ? "preventif" : "curatif", observations: `${otNum(o)} — ${f.compte_rendu}`, hp: num("hp"), bp: num("bp"), intensite: num("intensite"), t_soufflage: num("t_soufflage"), t_reprise: num("t_reprise") }).select().single();
         if (error) throw error; intervention_id = data.id;
       }
       // 3. Clôture de l'OT (+ signalement résolu)
@@ -1078,6 +1152,7 @@ function renderBon(id) {
   ${e ? `<p class="m" style="margin-top:6px">Points de contrôle : ${TYPES[e.type]?.pts || ""}</p>` : ""}
   <h3 style="font-size:16px;margin-top:18px">Sécurité</h3><p style="font-size:13.5px">☐ Consignation électrique réalisée (NF C 18-510) &nbsp; ☐ EPI portés &nbsp; ☐ Zone balisée &nbsp; ☐ Fluides : récupération conforme</p>
   <h3 style="font-size:16px;margin-top:18px">Compte rendu</h3><p style="border:1px solid var(--line);padding:10px;min-height:90px">${esc(o.compte_rendu || "")}</p>
+  ${(() => { const ph = (S.ints.find(i => i.id === o.intervention_id) || {}).photos; return ph && ph.length ? `<h3 style="font-size:16px;margin-top:18px">Photos des pièces</h3>${photosHTML(ph)}` : ""; })()}
   <h3 style="font-size:16px;margin-top:18px">Pièces utilisées</h3><table><tr><th>Désignation</th><th>Quantité</th><th>Prix unitaire</th><th>Montant</th></tr>
   ${conso.map(x => { const p = S.pieces.find(pp => pp.id === x.piece_id) || {}; return `<tr><td>${esc(p.designation || "")}</td><td>${x.quantite} ${p.unite || ""}</td><td>${fcfa2(x.prix_unitaire)}</td><td>${fcfa2(x.quantite * x.prix_unitaire)}</td></tr>`; }).join("") || `<tr><td colspan="4" style="height:60px"></td></tr>`}</table>
   <p style="margin-top:10px;font-size:14px">Durée : ${o.duree_heures ?? "……"} h · Main d'œuvre : ${fcfa2(o.cout_main_oeuvre)} · Pièces : ${fcfa2(coutPieces(o))} · <b>Total : ${fcfa2((o.cout_main_oeuvre || 0) + coutPieces(o))}</b></p>
