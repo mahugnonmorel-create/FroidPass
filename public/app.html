@@ -8,7 +8,7 @@
 <link rel="manifest" href="manifest.json">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=IBM+Plex+Mono:wght@400;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=12">
+<link rel="stylesheet" href="style.css?v=14">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="config.js?v=4"></script>
 </head>
@@ -39,6 +39,13 @@
   <a href="javascript:void 0" id="basPlus"><i>☰</i>Plus</a>
 </nav>
 <div class="toast" id="toast"></div>
-<script type="module" src="app.js?v=15"></script>
+<script type="module" src="app.js?v=17"></script>
+<script>
+// Service worker : l'application s'ouvre même sans réseau et reçoit les notifications
+if ("serviceWorker" in navigator) addEventListener("load", () => navigator.serviceWorker.register("/sw.js").then(() => navigator.serviceWorker.ready).then(r => {
+  const urls = performance.getEntriesByType("resource").map(x => x.name).filter(u => u.startsWith(location.origin) || /cdn\.jsdelivr|fonts\.(googleapis|gstatic)/.test(u));
+  r.active && r.active.postMessage({ type: "precache", urls: urls.concat([location.origin + "/app"]) });
+}).catch(() => {}));
+</script>
 </body>
 </html>

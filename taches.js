@@ -1,3 +1,4 @@
+import { envoyerPush } from "./push.js";
 // FroidPass — Prévenir automatiquement les techniciens quand le responsable / directeur leur affecte des tâches
 //   • e-mail (Brevo)                         : BREVO_API_KEY + EMAIL_EXPEDITEUR
 //   • WhatsApp (API officielle WhatsApp Cloud) : WHATSAPP_TOKEN + WHATSAPP_PHONE_ID (+ WHATSAPP_TEMPLATE, WHATSAPP_API_VERSION facultatifs)
@@ -21,7 +22,6 @@ export async function notifierTaches(request, env) {
   if (request.method !== "POST") return json({ error: "Méthode non autorisée" }, 405);
   if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return json({ envoyes: 0, raison: "configuration" });
   const mailOK = !!(env.BREVO_API_KEY && env.EMAIL_EXPEDITEUR), waOK = !!(env.WHATSAPP_TOKEN && env.WHATSAPP_PHONE_ID);
-  if (!mailOK && !waOK) return json({ email: 0, whatsapp: 0, whatsapp_auto: false, email_auto: false });
   const token = (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
   const user = token && await fetch(env.SUPABASE_URL + "/auth/v1/user", { headers: { apikey: env.SUPABASE_SERVICE_ROLE_KEY, Authorization: "Bearer " + token } }).then(r => r.ok ? r.json() : null);
   if (!user?.id) return json({ error: "Session expirée, reconnectez-vous" }, 401);
@@ -37,9 +37,12 @@ export async function notifierTaches(request, env) {
   const parTech = {};
   for (const o of ots) (parTech[o.assigne_a] ||= []).push(o);
 
-  let email = 0, whatsapp = 0; const echecs = [];
+  let email = 0, whatsapp = 0, push = 0; const echecs = [];
   for (const [uid, liste] of Object.entries(parTech)) {
     if (uid === user.id) continue; // pas de notification à soi-même
+    // ---- Notification sur le téléphone (gratuite) ----
+    const urgentP = liste.some(o => o.priorite === "urgente");
+    push += await envoyerPush(env, [uid], { titre: `${urgentP ? "🚨 " : ""}${liste.length > 1 ? liste.length + " nouvelles tâches" : "Nouvelle tâche"} — ${chef.nom || "votre responsable"}`, corps: liste.slice(0, 3).map(o => `OT-${String(o.numero).padStart(4, "0")} ${o.titre}`).join(" · "), url: liste.length === 1 ? `/app#ot-${liste[0].id}` : "/app#tableau", tag: "taches", urgent: urgentP });
     const m = (await pg(env, `membres?user_id=eq.${uid}&select=nom,telephone`))[0] || {};
     // ---- WhatsApp automatique (si l'API WhatsApp Cloud est configurée) ----
     if (waOK) {
@@ -66,7 +69,7 @@ export async function notifierTaches(request, env) {
     });
     if (r.ok) email++; else echecs.push(`E-mail ${m.nom || ""} : ${r.status}`);
   }
-  return json({ email, whatsapp, email_auto: mailOK, whatsapp_auto: waOK, echecs });
+  return json({ email, whatsapp, push, email_auto: mailOK, whatsapp_auto: waOK, echecs });
 }
 
 // Numéro international sans « + » (Bénin : 229 + 10 chiffres commençant par 01)

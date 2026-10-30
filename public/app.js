@@ -92,10 +92,11 @@ const W = () => isEnt()
 function majMenu() { const a = document.querySelector('#menu a[data-v="clients"]'); if (a) a.textContent = W().Clients; }
 
 // ---------- Données ----------
-async function loadAll() {
+async function loadAllEnLigne() {
   // Équipe : accepter une invitation en attente, puis déterminer l'organisation et le rôle
   if (!S.invChecked) { S.invChecked = true; try { const r = await sb.rpc("accepter_invitation"); if (r.data?.statut === "acceptee") toast("Bienvenue dans l'équipe !"); } catch {} }
   const mb = await sb.from("membres").select("*");
+  if (mb.error && estErreurReseau(mb.error)) throw mb.error;
   S.membres = mb.error ? [] : mb.data;
   S.moi = S.membres.find(m => m.user_id === S.user.id) || null;
   S.role = S.moi ? S.moi.role : "admin";
@@ -163,11 +164,7 @@ function brancherSignature(form) {
   form.querySelector("[data-sigclear]").onclick = () => { ctx.clearRect(0, 0, cv.width, cv.height); vide = true; };
   return async () => {
     if (vide) return null;
-    const blob = await new Promise(ok => cv.toBlob(ok, "image/png"));
-    const path = `${S.orgId}/signatures/${crypto.randomUUID()}.png`;
-    const { error } = await sb.storage.from("photos").upload(path, blob, { contentType: "image/png" });
-    if (error) throw new Error("Enregistrement de la signature impossible : " + error.message);
-    return { path, nom: (form.querySelector("[name=signataire]")?.value || "").trim().slice(0, 80), date: new Date().toISOString() };
+    return { blob: await new Promise(ok => cv.toBlob(ok, "image/png")), nom: (form.querySelector("[name=signataire]")?.value || "").trim().slice(0, 80), date: new Date().toISOString() };
   };
 }
 const signatureHTML = sig => sig?.path ? `<div class="sig-img"><img src="${photoUrl(sig.path)}" alt="Signature"><span class="m">Signé${sig.nom ? " par " + esc(sig.nom) : ""} le ${fr(sig.date)}</span></div>` : "";
@@ -287,16 +284,10 @@ function brancherPhotos(form, equipementId) {
   };
   list.oninput = list.onchange = ev => { const row = ev.target.closest(".ph-in"); if (!row) return; const it = items[row.dataset.k]; if (ev.target.matches("[data-cat]")) it.categorie = ev.target.value; if (ev.target.matches("[data-leg]")) it.legende = ev.target.value.slice(0, 140); };
   list.onclick = ev => { if (!ev.target.matches("[data-rmph]")) return; items.splice(ev.target.closest(".ph-in").dataset.k, 1); draw(); };
+  // Prépare les photos (compression) ; le téléversement se fait ensuite, en ligne ou plus tard (hors connexion)
   return async () => {
     const out = [];
-    for (const [k, it] of items.entries()) {
-      toast(`Envoi des photos… ${k + 1}/${items.length}`);
-      const blob = await compresserImage(it.file);
-      const path = `${S.orgId}/${equipementId || "sans-equipement"}/${crypto.randomUUID()}.jpg`;
-      const { error } = await sb.storage.from("photos").upload(path, blob, { contentType: "image/jpeg" });
-      if (error) throw new Error("Envoi de la photo impossible : " + error.message + (/bucket|not found/i.test(error.message) ? " (exécutez la mise à jour SQL des photos dans Supabase)" : ""));
-      out.push({ path, categorie: it.categorie, legende: it.legende.trim() });
-    }
+    for (const [k, it] of items.entries()) { if (items.length > 1) toast(`Préparation des photos… ${k + 1}/${items.length}`); out.push({ blob: await compresserImage(it.file), categorie: it.categorie, legende: it.legende.trim() }); }
     return out;
   };
 }
@@ -315,6 +306,173 @@ function sectionPhotos(ints, nomEq, titre) {
   const l = ints.filter(i => Array.isArray(i.photos) && i.photos.length);
   if (!l.length) return "";
   return `<h3 style="font-size:17px;margin-top:22px">${titre}</h3>${l.map(i => `<div class="ph-bloc"><div style="font-size:13.5px;font-weight:600;margin-top:8px">${fr(i.date)} · ${esc(nomEq(i))} · ${i.type === "preventif" ? "Préventif" : "Curatif"}</div>${photosHTML(i.photos, i, "rapport")}</div>`).join("")}`;
+}
+
+// =====================================================================
+// HORS CONNEXION : données gardées sur le téléphone + file d'attente des interventions
+// =====================================================================
+const IDB = (() => {
+  let p; const open = () => p ||= new Promise((ok, ko) => { const r = indexedDB.open("froidpass", 1); r.onupgradeneeded = () => { r.result.createObjectStore("cache"); r.result.createObjectStore("file", { keyPath: "id", autoIncrement: true }); }; r.onsuccess = () => ok(r.result); r.onerror = () => ko(r.error); });
+  const tx = async (store, mode, fn) => { const db = await open(); return new Promise((ok, ko) => { const t = db.transaction(store, mode), req = fn(t.objectStore(store)); t.oncomplete = () => ok(req?.result); t.onerror = () => ko(t.error); }); };
+  return { get: k => tx("cache", "readonly", s => s.get(k)), set: (k, v) => tx("cache", "readwrite", s => s.put(v, k)), ajouter: v => tx("file", "readwrite", s => s.add(v)), maj: v => tx("file", "readwrite", s => s.put(v)), lister: () => tx("file", "readonly", s => s.getAll()), suppr: id => tx("file", "readwrite", s => s.delete(id)) };
+})();
+const estErreurReseau = e => !navigator.onLine || /failed to fetch|networkerror|load failed|network request failed|fetch failed|timed? ?out|err_internet/i.test(String(e?.message || e || ""));
+const CLES_SNAP = ["membres", "moi", "role", "orgId", "tech", "me", "clients", "eqs", "ints", "pays", "invitations", "sigs", "rapports", "gmao", "ots", "pieces", "consos"];
+async function loadAll() {
+  try {
+    await loadAllEnLigne(); S.horsLigne = false;
+    const snap = {}; CLES_SNAP.forEach(k => snap[k] = S[k]); snap.date = new Date().toISOString();
+    IDB.set("snap:" + S.user.id, snap).catch(() => {});
+  } catch (e) {
+    const snap = estErreurReseau(e) ? await IDB.get("snap:" + S.user.id).catch(() => null) : null;
+    if (!snap) throw e;
+    CLES_SNAP.forEach(k => S[k] = snap[k]); S.horsLigne = snap.date;
+  }
+  await integrerFile();
+}
+// Les actions en attente apparaissent tout de suite dans l'application
+async function integrerFile() {
+  const file = (await IDB.lister().catch(() => [])).filter(j => j.user === S.user?.id);
+  S.attente = file;
+  for (const j of file) {
+    if (j.kind === "intervention" && !S.ints.some(i => i.id === "attente-" + j.id)) S.ints.unshift({ id: "attente-" + j.id, equipement_id: j.eqId, ...j.payload, photos: [], _attente: j.photos.length + (j.sig ? 1 : 0), created_at: j.cree });
+    if (j.kind === "cloture") { const o = S.ots.find(x => x.id === j.ot.id); if (o && o.statut !== "termine") Object.assign(o, { statut: "termine", compte_rendu: j.champs.compte_rendu, date_fin: j.date_fin, _attente: true });
+      if (j.eqId && !S.ints.some(i => i.id === "attente-" + j.id)) S.ints.unshift({ id: "attente-" + j.id, equipement_id: j.eqId, date: j.date, type: ["preventif", "inspection"].includes(j.ot.type) ? "preventif" : "curatif", observations: `OT-${String(j.ot.numero).padStart(4, "0")} — ${j.champs.compte_rendu}`, controles: j.controles, photos: [], _attente: j.photos.length + (j.sig ? 1 : 0), created_at: j.cree }); }
+  }
+  S.ints.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  majBandeau();
+}
+async function executerOuMettreEnFile(job) {
+  job.org = S.orgId; job.user = S.user.id; job.cree = new Date().toISOString();
+  if (navigator.onLine) { try { await EXEC[job.kind](job); return "ok"; } catch (e) { if (!estErreurReseau(e)) throw e; } }
+  job.id = await IDB.ajouter(job); await integrerFile(); return "file";
+}
+async function televerserJob(j) {
+  j.photosOK ||= [];
+  for (let k = j.photosOK.length; k < (j.photos || []).length; k++) {
+    const ph = j.photos[k], path = `${j.org}/${j.eqId || "sans-equipement"}/${crypto.randomUUID()}.jpg`;
+    const { error } = await sb.storage.from("photos").upload(path, ph.blob, { contentType: "image/jpeg" });
+    if (error) throw new Error("Envoi de la photo impossible : " + error.message + (/bucket|not found/i.test(error.message) ? " (exécutez la mise à jour SQL des photos dans Supabase)" : ""));
+    j.photosOK.push({ path, categorie: ph.categorie, legende: ph.legende });
+    if (j.id) await IDB.maj(j);
+  }
+  if (j.sig && !j.sigOK) {
+    const path = `${j.org}/signatures/${crypto.randomUUID()}.png`;
+    const { error } = await sb.storage.from("photos").upload(path, j.sig.blob, { contentType: "image/png" });
+    if (error) throw new Error("Enregistrement de la signature impossible : " + error.message);
+    j.sigOK = { path, nom: j.sig.nom, date: j.sig.date }; if (j.id) await IDB.maj(j);
+  }
+  return { photos: j.photosOK, signature: j.sigOK || null };
+}
+const EXEC = {
+  async intervention(j) {
+    const { photos, signature } = await televerserJob(j);
+    const { error } = await sb.from("interventions").insert({ ...j.payload, equipement_id: j.eqId, ...(photos.length ? { photos } : {}), ...(signature ? { signature } : {}) });
+    if (error) throw error;
+  },
+  async cloture(j) {
+    const { photos, signature } = await televerserJob(j); j.etapes ||= {};
+    const save = () => j.id ? IDB.maj(j) : null;
+    if (j.lignes.length && !j.etapes.conso) { const { error } = await sb.from("consommations").insert(j.lignes.map(l => ({ ...l, ordre_id: j.ot.id }))); if (error) throw error; j.etapes.conso = true; await save(); }
+    if (j.eqId && !j.etapes.intId) {
+      const c = j.champs, { data, error } = await sb.from("interventions").insert({ ...(photos.length ? { photos } : {}), ...(j.controles.length ? { controles: j.controles } : {}), ...(signature ? { signature } : {}), equipement_id: j.eqId, date: j.date, type: ["preventif", "inspection"].includes(j.ot.type) ? "preventif" : "curatif", observations: `OT-${String(j.ot.numero).padStart(4, "0")} — ${c.compte_rendu}`, hp: c.hp, bp: c.bp, intensite: c.intensite, t_soufflage: c.t_soufflage, t_reprise: c.t_reprise }).select().single();
+      if (error) throw error; j.etapes.intId = data.id; await save();
+    }
+    const c = j.champs, { error } = await sb.from("ordres_travail").update({ ...(signature ? { signature } : {}), statut: "termine", date_fin: j.date_fin, compte_rendu: c.compte_rendu, duree_heures: c.duree_heures, cout_main_oeuvre: c.cout_main_oeuvre, intervention_id: j.etapes.intId || null, date_debut: j.ot.date_debut || j.date_fin }).eq("id", j.ot.id);
+    if (error) throw error;
+    if (j.ot.signalement_id) await sb.from("signalements").update({ statut: "resolu", resolu_at: j.date_fin }).eq("id", j.ot.signalement_id);
+  }
+};
+let syncEnCours = false;
+async function synchroniser(manuel = false) {
+  if (syncEnCours || !S.user || !navigator.onLine) { if (manuel && !navigator.onLine) toast("Toujours hors connexion"); return; }
+  const file = (await IDB.lister().catch(() => [])).filter(j => j.user === S.user.id);
+  if (!file.length) { if (S.horsLigne) { await loadAll().catch(() => {}); route(); } return; }
+  syncEnCours = true; let ok = 0;
+  for (const j of file) {
+    try { await EXEC[j.kind](j); await IDB.suppr(j.id); ok++; }
+    catch (e) { if (estErreurReseau(e)) break; j.erreur = String(e.message || e).slice(0, 200); await IDB.maj(j); }
+  }
+  syncEnCours = false;
+  if (ok) { await loadAll().catch(() => {}); route(); toast(`✅ ${ok} action(s) envoyée(s) après le retour du réseau`); } else await integrerFile();
+}
+function majBandeau() {
+  let el = document.getElementById("bandeau");
+  if (!el) { el = document.createElement("div"); el.id = "bandeau"; el.className = "bandeau noprint"; document.body.prepend(el); }
+  const n = (S.attente || []).length, err = (S.attente || []).filter(j => j.erreur);
+  const hl = !navigator.onLine || S.horsLigne;
+  el.hidden = !hl && !n;
+  el.innerHTML = `${hl ? `📴 <b>Hors connexion</b>${S.horsLigne && typeof S.horsLigne === "string" ? ` · données du ${fr(S.horsLigne)} à ${new Date(S.horsLigne).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}` : ""}` : "🔄"}${n ? ` · <b>${n}</b> action(s) en attente d'envoi` : ""}${n && !hl ? ` <button class="btn btn-sm" id="bSync">Envoyer maintenant</button>` : ""}${err.length ? `<br><span>⚠ ${err.length} envoi(s) refusé(s) : ${esc(err[0].erreur)} <button class="btn btn-sm" id="bSupErr">Supprimer</button></span>` : ""}`;
+  el.querySelector("#bSync")?.addEventListener("click", () => synchroniser(true));
+  el.querySelector("#bSupErr")?.addEventListener("click", () => confirmBox("Supprimer les envois refusés (ils ne seront pas enregistrés) ?", async () => { for (const j of err) await IDB.suppr(j.id); await loadAll().catch(() => {}); route(); }));
+}
+window.addEventListener("online", () => { majBandeau(); setTimeout(() => synchroniser(), 1500); });
+window.addEventListener("offline", majBandeau);
+setInterval(() => { if ((S.attente || []).length && navigator.onLine) synchroniser(); }, 60000);
+
+function ajouterCarteNotifs() { const h = carteNotifs(); if (!h || document.getElementById("carteNotifs")) return; $view.insertAdjacentHTML("afterbegin", h); brancherCarteNotifs(); }
+// =====================================================================
+// NOTIFICATIONS SUR LE TÉLÉPHONE (tâches assignées, pannes signalées)
+// =====================================================================
+const pushDispo = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+const estIOS = /iphone|ipad|ipod/i.test(navigator.userAgent), installee = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
+const cleUint8 = b => Uint8Array.from(atob(b.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((b.length + 3) % 4)), c => c.charCodeAt(0));
+async function abonnementActuel() { if (!pushDispo) return null; const reg = await navigator.serviceWorker.getRegistration(); return reg ? reg.pushManager.getSubscription() : null; }
+async function appelPush(chemin, corps) {
+  const { data: { session } } = await sb.auth.getSession();
+  const r = await fetch("/api/push/" + chemin, { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + session.access_token }, body: JSON.stringify(corps || {}) });
+  const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || "Erreur " + r.status); return j;
+}
+async function activerNotifs() {
+  if (!pushDispo) throw new Error(estIOS && !installee ? "Sur iPhone : ajoutez d'abord FroidPass à l'écran d'accueil (Partager → Sur l'écran d'accueil), puis ouvrez-le depuis l'icône." : "Ce navigateur ne gère pas les notifications. Utilisez Chrome.");
+  const perm = await Notification.requestPermission();
+  if (perm !== "granted") throw new Error("Notifications refusées. Autorisez-les dans les réglages du navigateur pour ce site.");
+  const reg = await navigator.serviceWorker.register("/sw.js").then(() => navigator.serviceWorker.ready);
+  const { publicKey } = await (await fetch("/api/push/cle")).json();
+  let sub = await reg.pushManager.getSubscription();
+  if (sub && cleUint8(publicKey).toString() !== new Uint8Array(sub.options?.applicationServerKey || []).toString()) { await sub.unsubscribe(); sub = null; }
+  sub ||= await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: cleUint8(publicKey) });
+  await appelPush("abonner", { subscription: sub.toJSON(), appareil: (navigator.userAgentData?.platform || navigator.platform || "") + " · " + (estIOS ? "iPhone" : /android/i.test(navigator.userAgent) ? "Android" : "Ordinateur") });
+}
+async function desactiverNotifs() { const sub = await abonnementActuel(); if (sub) { await appelPush("desabonner", { endpoint: sub.endpoint }).catch(() => {}); await sub.unsubscribe(); } }
+function carteNotifs() {
+  if (!pushDispo && !estIOS) return "";
+  if (pushDispo && Notification.permission !== "default") return "";
+  try { if (localStorage.getItem("fp_notifs_plus_tard") > Date.now()) return ""; } catch {}
+  return `<div class="panel notif-carte noprint" id="carteNotifs"><div><b>🔔 Recevez ${isAdmin() ? "les pannes signalées et les tâches" : "vos nouvelles tâches"} en notification sur ce téléphone</b><p class="m" style="margin-top:2px">Gratuit, même application fermée.${estIOS && !installee ? " Sur iPhone : ajoutez d'abord FroidPass à l'écran d'accueil." : ""}</p></div>
+    <span style="display:flex;gap:6px"><button class="btn btn-hot btn-sm" id="nOn">Activer</button><button class="btn btn-ghost btn-sm" id="nPlusTard">Plus tard</button></span></div>`;
+}
+function brancherCarteNotifs() {
+  const c = document.getElementById("carteNotifs"); if (!c) return;
+  document.getElementById("nOn").onclick = async () => { try { await activerNotifs(); c.remove(); toast("🔔 Notifications activées sur ce téléphone"); } catch (e) { toast(e.message); } };
+  document.getElementById("nPlusTard").onclick = () => { try { localStorage.setItem("fp_notifs_plus_tard", Date.now() + 7 * DAY); } catch {} c.remove(); };
+}
+async function panneauNotifsProfil() {
+  const el = document.getElementById("pNotifs"); if (!el) return;
+  const sub = await abonnementActuel().catch(() => null), actif = !!sub && Notification.permission === "granted";
+  el.innerHTML = `<h3>🔔 Notifications sur ce téléphone</h3><p class="m">${!pushDispo ? (estIOS && !installee ? "Sur iPhone, ajoutez FroidPass à l'écran d'accueil (Partager → Sur l'écran d'accueil) puis ouvrez-le depuis l'icône." : "Non disponibles sur ce navigateur.") : actif ? "✅ Activées : vous êtes prévenu des tâches qui vous sont assignées" + (isAdmin() ? " et des pannes signalées par QR." : ".") : Notification.permission === "denied" ? "⛔ Bloquées dans les réglages du navigateur pour ce site." : "Désactivées."}</p>
+    ${pushDispo ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">${actif ? `<button class="btn btn-teal btn-sm" id="nTest">Envoyer un test</button><button class="btn btn-ghost btn-sm" id="nOff">Désactiver</button>` : `<button class="btn btn-hot btn-sm" id="nOn2">Activer</button>`}</div>` : ""}`;
+  const q = id => document.getElementById(id);
+  if (q("nOn2")) q("nOn2").onclick = async () => { try { await activerNotifs(); toast("🔔 Notifications activées"); panneauNotifsProfil(); } catch (e) { toast(e.message); } };
+  if (q("nOff")) q("nOff").onclick = async () => { await desactiverNotifs(); toast("Notifications désactivées sur ce téléphone"); panneauNotifsProfil(); };
+  if (q("nTest")) q("nTest").onclick = async () => { try { const r = await appelPush("test"); toast(r.envoyes ? "Notification envoyée : elle arrive dans quelques secondes" : "Aucun appareil joignable : désactivez puis réactivez"); } catch (e) { toast(e.message); } };
+}
+
+// =====================================================================
+// SAUVEGARDE : téléchargement complet (JSON) + parc (CSV) ; e-mail hebdomadaire côté serveur
+// =====================================================================
+function sauvegardeJSON() {
+  const d = { format: "froidpass-sauvegarde", version: 1, date: new Date().toISOString(), organisation: { nom: S.tech.nom, entreprise: S.tech.entreprise, whatsapp: S.tech.whatsapp, offre: S.tech.offre },
+    clients: S.clients, equipements: S.eqs, interventions: S.ints.filter(i => !i._attente), ordres_travail: S.ots, pieces: S.pieces, consommations: S.consos, signalements: S.sigs, membres: (S.membres || []).map(m => ({ nom: m.nom, role: m.role, telephone: m.telephone })), rapports_envoyes: S.rapports || [] };
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(d, null, 1)], { type: "application/json" }));
+  a.download = `froidpass-sauvegarde-${(S.tech.entreprise || S.tech.nom || "compte").replace(/[^\w-]+/g, "-")}-${iso(TODAY)}.json`; a.click();
+}
+function panneauSauvegarde() {
+  const el = document.getElementById("pSauv"); if (!el) return;
+  if (!isAdmin()) { el.remove(); return; }
+  el.innerHTML = `<h3>💾 Sauvegarde de vos données</h3><p class="m">Téléchargez à tout moment une copie complète : ${W().clients}, équipements, interventions, OT, stock, signalements (les photos restent consultables par leurs liens).${peutRelancer() ? " Une sauvegarde vous est aussi envoyée <b>chaque dimanche par e-mail</b>." : " Avec un abonnement, une sauvegarde vous est envoyée chaque dimanche par e-mail."}</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"><button class="btn btn-teal btn-sm" id="sJson">Télécharger la sauvegarde complète (.json)</button><button class="btn btn-ghost btn-sm" id="sCsv">Parc et interventions (.csv, Excel)</button></div>`;
+  document.getElementById("sJson").onclick = sauvegardeJSON; document.getElementById("sCsv").onclick = exportCsv;
 }
 
 // ---------- Routage ----------
@@ -401,7 +559,8 @@ function renderAuth(mode, profilInit = "technicien") {
 }
 
 function renderTableau() {
-  if (!isAdmin()) return renderMonEspace();
+  if (!isAdmin()) { renderMonEspace(); return ajouterCarteNotifs(); }
+  setTimeout(ajouterCarteNotifs, 0);
   const sts = S.eqs.map(status);
   const late = sts.filter(s => s.d < 0).length, soon = sts.filter(s => s.d >= 0 && s.d <= 14).length;
   const relances = [...S.eqs].sort((a, b) => status(a).d - status(b).d).filter(e => status(e).d <= 14);
@@ -529,7 +688,7 @@ function renderEq(id) {
       ${sigsHTML(S.sigs.filter(x => x.equipement_id === e.id && x.statut !== "resolu"))}
       <div class="panel"><h3>Historique</h3><div class="hist">${list.length ? list.map(x => `
         <div class="it"><b class="mono" style="font-size:13.5px">${fr(x.date)}</b> · <b>${x.type === "preventif" ? "Préventif" : "Curatif"}</b>
-          <button class="btn btn-sm noprint" style="padding:0 6px;color:var(--mute);background:none" data-delint="${x.id}" title="Supprimer" ${isAdmin() ? "" : "hidden"}>✕</button>
+          ${x._attente != null ? ` <span class="pill p-warn">⏳ en attente d'envoi${x._attente ? " · " + x._attente + " photo(s)/signature" : ""}</span>` : `<button class="btn btn-sm noprint" style="padding:0 6px;color:var(--mute);background:none" data-delint="${x.id}" title="Supprimer" ${isAdmin() ? "" : "hidden"}>✕</button>`}
           <div class="m">${esc(x.observations)}</div>${measHTML(x)}${controlesHTML(x.controles)}${photosHTML(x.photos, x)}${signatureHTML(x.signature)}${flags(x).map(f => `<div class="flag">⚠ ${f}</div>`).join("")}</div>`).join("")
         : `<p class="empty">Aucune intervention.</p>`}</div></div>
     </div>
@@ -544,11 +703,12 @@ function renderEq(id) {
     const controles = lireCtl(); if (controles.length) o.controles = controles;
     for (const k of ["hp", "bp", "intensite", "t_soufflage", "t_reprise"]) o[k] = o[k] === "" ? null : Number(String(o[k]).replace(",", "."));
     const b = ev.target.querySelector("button[type=submit]"); b.disabled = true;
-    let photos = [];
-    try { photos = await envoyerPhotos(); const sig = await envoyerSig(); if (sig) o.signature = sig; } catch (err) { toast(err.message); b.disabled = false; return; }
-    const { error } = await sb.from("interventions").insert({ ...o, equipement_id: e.id, ...(photos.length ? { photos } : {}) });
-    if (error) { await supprimerPhotos(photos); toast(error.message); b.disabled = false; return; }
-    await loadAll(); renderEq(e.id); toast("Intervention enregistrée · prochain entretien recalculé");
+    try {
+      const job = { kind: "intervention", eqId: e.id, payload: o, photos: await envoyerPhotos(), sig: await envoyerSig() };
+      const r = await executerOuMettreEnFile(job);
+      if (r === "ok") { await loadAll(); renderEq(e.id); toast("Intervention enregistrée · prochain entretien recalculé"); }
+      else { renderEq(e.id); toast("📴 Hors connexion : intervention gardée sur le téléphone, envoi automatique au retour du réseau"); }
+    } catch (err) { toast(err.message); b.disabled = false; }
   };
   document.getElementById("editEq").onclick = () => openAddEq(e);
   if (document.getElementById("delEq")) document.getElementById("delEq").onclick = () => confirmBox(`Supprimer « ${esc(e.emplacement)} » et tout son historique ?`, async () => {
@@ -749,6 +909,7 @@ function renderProfil() {
     toast(error ? error.message : "Mot de passe modifié"); ev.target.reset();
   };
   document.getElementById("out").onclick = () => sb.auth.signOut();
+  $view.insertAdjacentHTML("beforeend", `<div class="panel" id="pNotifs"></div><div class="panel" id="pSauv"></div>`); panneauNotifsProfil(); panneauSauvegarde();
 }
 
 function renderCert(id) {
@@ -924,6 +1085,7 @@ async function onSession(session) {
     S.user = session?.user || null;
     if (S.user && S.user.id !== was) {
       try { await loadAll(); } catch (e) { toast("Erreur de chargement : " + e.message); }
+      setTimeout(() => synchroniser(), 2000);
       await verifierRetourPaiement();
       if (["#connexion", "#inscription", ""].includes(location.hash)) location.hash = "tableau";
     }
@@ -1304,7 +1466,7 @@ function openOTForm(pre) {
 
 async function majOT(id, patch, msg) {
   const { error } = await sb.from("ordres_travail").update(patch).eq("id", id);
-  if (error) { toast(error.message); return false; }
+  if (error) { toast(estErreurReseau(error) ? "📴 Connexion requise pour cette action (la clôture, elle, fonctionne hors connexion)" : error.message); return false; }
   await loadAll(); renderOTDetail(id); if (msg) toast(msg); return true;
 }
 
@@ -1400,25 +1562,13 @@ function formTerminer(o) {
     ev.preventDefault(); const b = ev.target.querySelector("button[type=submit]"); b.disabled = true;
     const f = Object.fromEntries(new FormData(ev.target)), num = k => f[k] === "" || f[k] == null ? null : Number(String(f[k]).replace(",", "."));
     try {
-      // 0. Photos des pièces (téléversées en premier : rien n'est enregistré si l'envoi échoue)
-      const photos = e ? await envoyerPhotos() : [], controles = lireCtl(), signature = await envoyerSig();
-      // 1. Pièces consommées
-      const lignes = [...pls.querySelectorAll(".pl")].map(l => ({ piece_id: l.querySelector("[name=piece]").value, quantite: Number(l.querySelector("[name=qte]").value) })).filter(l => l.piece_id && l.quantite > 0);
-      if (lignes.length) {
-        const { error } = await sb.from("consommations").insert(lignes.map(l => ({ ...l, ordre_id: o.id, prix_unitaire: S.pieces.find(p => p.id === l.piece_id).prix_unitaire })));
-        if (error) throw error;
-      }
-      // 2. Historique de l'équipement (carnet QR), avec les photos des pièces
-      let intervention_id = null;
-      if (e) {
-        const { data, error } = await sb.from("interventions").insert({ ...(photos.length ? { photos } : {}), ...(controles.length ? { controles } : {}), ...(signature ? { signature } : {}), equipement_id: e.id, date: iso(TODAY), type: ["preventif", "inspection"].includes(o.type) ? "preventif" : "curatif", observations: `${otNum(o)} — ${f.compte_rendu}`, hp: num("hp"), bp: num("bp"), intensite: num("intensite"), t_soufflage: num("t_soufflage"), t_reprise: num("t_reprise") }).select().single();
-        if (error) throw error; intervention_id = data.id;
-      }
-      // 3. Clôture de l'OT (+ signalement résolu)
-      const { error } = await sb.from("ordres_travail").update({ ...(signature ? { signature } : {}), statut: "termine", date_fin: new Date().toISOString(), compte_rendu: f.compte_rendu, duree_heures: num("duree_heures"), cout_main_oeuvre: num("cout_main_oeuvre") || 0, intervention_id, date_debut: o.date_debut || new Date().toISOString() }).eq("id", o.id);
-      if (error) throw error;
-      if (o.signalement_id) await sb.from("signalements").update({ statut: "resolu", resolu_at: new Date().toISOString() }).eq("id", o.signalement_id);
-      await loadAll(); renderOTDetail(o.id); toast(`${otNum(o)} terminé${e ? " · carnet de l'équipement mis à jour" : ""}`);
+      const lignes = [...pls.querySelectorAll(".pl")].map(l => ({ piece_id: l.querySelector("[name=piece]").value, quantite: Number(l.querySelector("[name=qte]").value) })).filter(l => l.piece_id && l.quantite > 0).map(l => ({ ...l, prix_unitaire: S.pieces.find(p => p.id === l.piece_id).prix_unitaire }));
+      const job = { kind: "cloture", eqId: e?.id || null, ot: { id: o.id, type: o.type, numero: o.numero, date_debut: o.date_debut, signalement_id: o.signalement_id }, lignes,
+        champs: { compte_rendu: f.compte_rendu, hp: num("hp"), bp: num("bp"), intensite: num("intensite"), t_soufflage: num("t_soufflage"), t_reprise: num("t_reprise"), duree_heures: num("duree_heures"), cout_main_oeuvre: num("cout_main_oeuvre") || 0 },
+        controles: lireCtl(), photos: e ? await envoyerPhotos() : [], sig: await envoyerSig(), date: iso(TODAY), date_fin: new Date().toISOString() };
+      const r = await executerOuMettreEnFile(job);
+      if (r === "ok") { await loadAll(); renderOTDetail(o.id); toast(`${otNum(o)} terminé${e ? " · carnet de l'équipement mis à jour" : ""}`); }
+      else { renderOTDetail(o.id); toast(`📴 Hors connexion : clôture de ${otNum(o)} gardée sur le téléphone, envoi automatique au retour du réseau`); }
     } catch (err) { toast(err.message); b.disabled = false; }
   };
 }
@@ -1612,7 +1762,7 @@ async function notifierAffectation(ids) {
     const txt = `Bonjour ${nom.split(" ")[0]},\n\n${(S.me || S.tech).nom} vous a assigné ${l.length > 1 ? l.length + " tâches" : "une tâche"} :\n${l.map(o => `• ${otNum(o)} — ${o.titre}${client(o.client_id).nom ? " (" + client(o.client_id).nom + ")" : ""}${o.date_prevue ? " — pour le " + fr(o.date_prevue) : ""}${o.priorite === "urgente" ? " — URGENT" : ""}`).join("\n")}\n\nDétails et compte rendu dans votre espace : ${location.origin}/app#tableau`;
     return `<div class="row" style="cursor:default;grid-template-columns:1fr auto"><div><div class="t">👤 ${esc(nom)} · ${l.length} tâche(s)</div><div class="m">${tel ? esc(telMembre(uid)) : "numéro WhatsApp non renseigné (page Équipe)"}</div></div>${tel ? `<a class="btn btn-teal btn-sm" target="_blank" rel="noopener" href="https://wa.me/${tel}?text=${encodeURIComponent(txt)}">${res.whatsapp_auto ? "Renvoyer sur WhatsApp" : "Envoyer sur WhatsApp"}</a>` : ""}</div>`;
   }).join("");
-  const etat = [res.email_auto ? `✉️ E-mail envoyé automatiquement (${res.email || 0})` : "✉️ E-mail automatique non configuré", res.whatsapp_auto ? `💬 WhatsApp envoyé automatiquement (${res.whatsapp || 0})` : "💬 WhatsApp automatique non configuré : envoyez en un clic ci-dessous"].join("<br>");
+  const etat = [`🔔 Notification sur le téléphone : ${res.push ? res.push + " envoyée(s)" : "aucune (le technicien doit l'activer dans Compte)"}`, res.email_auto ? `✉️ E-mail envoyé automatiquement (${res.email || 0})` : "✉️ E-mail automatique non configuré", res.whatsapp_auto ? `💬 WhatsApp envoyé automatiquement (${res.whatsapp || 0})` : "💬 WhatsApp automatique non configuré : envoyez en un clic ci-dessous"].join("<br>");
   modal(`<div class="panel"><h3>Prévenir ${Object.keys(parTech).length > 1 ? "les techniciens" : "le technicien"}</h3><p class="m" style="margin-bottom:10px">${etat}${(res.echecs || []).length ? `<br><span style="color:var(--bad)">${res.echecs.map(esc).join("<br>")}</span>` : ""}</p>${lignes}
     <div style="margin-top:12px"><button class="btn btn-ghost" data-close>Fermer</button></div></div>`);
 }

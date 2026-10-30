@@ -135,3 +135,9 @@ nav.bas{display:none}
 .toast{opacity:0;pointer-events:none}.toast.on{opacity:1}
 .menu a[data-v="scan"]{display:none}
 label .mic{display:inline-block;width:auto;justify-self:start;align-self:flex-start;margin:0 0 4px}
+
+/* Bandeau hors connexion */
+.bandeau{position:sticky;top:0;z-index:40;background:#fff4e5;border-bottom:1px solid #f0c98a;color:#5a3b00;font-size:13.5px;padding:7px 14px;text-align:center}
+.bandeau .btn{padding:3px 10px;font-size:12px;margin-left:6px}
+
+.notif-carte{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;border:2px solid var(--heat);background:#fff8f3}

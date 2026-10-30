@@ -195,6 +195,33 @@ export async function runAutomatisations(env, { dryRun = false } = {}) {
     }
   }
 
+  // ---------- Dimanche : sauvegarde complète par e-mail aux abonnés (pièce jointe JSON) ----------
+  if (_d.getUTCDay() === 0 && env.BREVO_API_KEY && env.EMAIL_EXPEDITEUR) {
+    for (const t of actifs) {
+      const to = emails[t.id]?.email; if (!to) continue;
+      if (dryRun) { log.emails.push(`sauvegarde → ${to}`); continue; }
+      try {
+        await once(env, t.id, "sauvegarde", isoDay(today), async () => {
+          const q = tbl => rest(env, `${tbl}?technicien_id=eq.${t.id}&select=*`).catch(() => []);
+          const [clients, equipements, interventions, ordres_travail, pieces, consommations, signalements] = await Promise.all(["clients", "equipements", "interventions", "ordres_travail", "pieces", "consommations", "signalements"].map(q));
+          const membres = (await rest(env, `membres?org_id=eq.${t.id}&select=nom,role,telephone`).catch(() => []));
+          const contenu = JSON.stringify({ format: "froidpass-sauvegarde", version: 1, date: new Date().toISOString(), organisation: { nom: t.nom, entreprise: t.entreprise }, clients, equipements, interventions, ordres_travail, pieces, consommations, signalements, membres });
+          if (contenu.length > 8e6) throw new Error("sauvegarde trop volumineuse pour l'e-mail");
+          const octets = new TextEncoder().encode(contenu); let bin = ""; // UTF-8 → base64, par morceaux
+          for (let i = 0; i < octets.length; i += 0x8000) bin += String.fromCharCode(...octets.subarray(i, i + 0x8000));
+          const b64 = btoa(bin);
+          const r = await fetch("https://api.brevo.com/v3/smtp/email", { method: "POST", headers: { "api-key": env.BREVO_API_KEY, "Content-Type": "application/json" },
+            body: JSON.stringify({ sender: { name: "FroidPass", email: env.EMAIL_EXPEDITEUR }, to: [{ email: to }], subject: `💾 Sauvegarde hebdomadaire FroidPass — ${fr(isoDay(today))}`,
+              htmlContent: gabarit(env, "Votre sauvegarde de la semaine", `<p>Vous trouverez en pièce jointe une copie complète de vos données FroidPass : ${clients.length} site(s)/client(s), ${equipements.length} équipement(s), ${interventions.length} intervention(s), ${ordres_travail.length} ordre(s) de travail.</p><p>Conservez ce fichier en lieu sûr (Google Drive, clé USB). Les photos restent accessibles par leurs liens.</p>`, "Ouvrir FroidPass", APP),
+              attachment: [{ name: `froidpass-sauvegarde-${isoDay(today)}.json`, content: b64 }] }) });
+          if (!r.ok) throw new Error("Brevo " + r.status);
+          return true;
+        });
+        log.emails.push(`sauvegarde → ${to}`);
+      } catch (e) { log.erreurs.push(`sauvegarde ${to} : ${e.message}`); }
+    }
+  }
+
   // ---------- Le 1er du mois : rapports automatiques aux clients ----------
   if (_d.getUTCDate() === 1 && env.BREVO_API_KEY && env.EMAIL_EXPEDITEUR) {
     const y = _d.getUTCFullYear(), m = _d.getUTCMonth(); // mois en cours (0-11) ; on envoie la période qui vient de se terminer

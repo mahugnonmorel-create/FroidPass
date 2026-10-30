@@ -1,3 +1,4 @@
+import { envoyerPush, responsablesOrg } from "./push.js";
 // FroidPass — réception des signalements de panne envoyés depuis le carnet public (QR)
 // Création côté serveur uniquement (clé service_role), avec limite anti-abus, puis alerte e-mail au responsable.
 const json = (d, s = 200) => new Response(JSON.stringify(d), { status: s, headers: { "Content-Type": "application/json; charset=utf-8" } });
@@ -30,6 +31,8 @@ export async function signaler(request, env) {
   if (recents.length >= 5) return json({ error: "Ce problème a déjà été signalé, le service est prévenu." }, 429);
 
   await rest(env, "signalements", "POST", { technicien_id: eq.technicien_id, equipement_id: eq.id, description, nom, telephone });
+  // Notification immédiate sur le téléphone des responsables
+  await envoyerPush(env, await responsablesOrg(env, eq.technicien_id), { titre: `${eq.criticite === "critique" ? "🚨 URGENT — " : "🚨 "}Panne signalée : ${eq.emplacement}`, corps: description.slice(0, 160), url: "/app#tableau", tag: "signalement-" + eq.id, urgent: eq.criticite === "critique" });
 
   // Alerte immédiate par e-mail au responsable (si Brevo est configuré)
   try {
