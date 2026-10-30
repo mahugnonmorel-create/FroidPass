@@ -437,10 +437,12 @@ begin
     'equipements', coalesce((select json_agg(json_build_object(
         'id', e.id, 'emplacement', e.emplacement, 'zone', e.zone, 'type', e.type, 'environnement', e.environnement,
         'criticite', e.criticite, 'frequence_jours', e.frequence_jours, 'marque', e.marque, 'puissance', e.puissance, 'date_pose', e.date_pose,
-        'dernier_preventif', (select max(i.date) from public.interventions i where i.equipement_id = e.id and i.type = 'preventif' and i.date < f))
+        'dernier_preventif', (select max(i.date) from public.interventions i where i.equipement_id = e.id and i.type = 'preventif' and i.date < f),
+        'pannes_12_mois', (select count(*) from public.interventions i where i.equipement_id = e.id and i.type = 'curatif' and i.date >= (f - interval '1 year') and i.date < f),
+        'signalements', (select count(*) from public.signalements s where s.equipement_id = e.id and s.created_at >= d and s.created_at < f))
       order by e.zone, e.emplacement) from public.equipements e where e.client_id = c.id), '[]'::json),
     'interventions', coalesce((select json_agg(json_build_object(
-        'date', i.date, 'type', i.type, 'equipement', e.emplacement, 'observations', i.observations,
+        'date', i.date, 'type', i.type, 'equipement_id', e.id, 'equipement', e.emplacement, 'observations', i.observations,
         'hp', i.hp, 'bp', i.bp, 'intensite', i.intensite, 't_soufflage', i.t_soufflage, 't_reprise', i.t_reprise,
         -- photos : l'analyse IA n'est transmise au client que si le responsable l'a validée
         'photos', (select coalesce(jsonb_agg(case when coalesce((p->'analyse'->>'valide')::boolean, false) then p else p - 'analyse' end), '[]'::jsonb) from jsonb_array_elements(coalesce(i.photos, '[]'::jsonb)) p)) order by i.date)

@@ -347,11 +347,24 @@ function renderTableau() {
   ${vueSites()}`;
 }
 
+// ---------- Pannes par équipement ----------
+// Une panne = une intervention curative (saisie directe ou OT curatif clôturé). Les signalements QR sont comptés à part.
+const SEUIL_REPETITIVE = 3; // pannes sur 12 mois → panne répétitive
+function pannesEq(id, debut = -Infinity, fin = Infinity) {
+  const l = S.ints.filter(i => i.equipement_id === id && i.type === "curatif" && Date.parse(i.date) >= debut && Date.parse(i.date) <= fin).sort((a, b) => b.date.localeCompare(a.date));
+  const sigs = (S.sigs || []).filter(x => x.equipement_id === id && Date.parse(x.created_at) >= debut && Date.parse(x.created_at) <= fin + DAY).length;
+  return { n: l.length, derniere: l[0]?.date || null, sigs, liste: l };
+}
+const pannes12 = id => pannesEq(id, TODAY - 365 * DAY, TODAY + DAY);
+// MTBF d'un équipement (jours) : durée d'observation (depuis la pose, 12 mois max) / nombre de pannes
+const mtbfEq = e => { const p = pannes12(e.id); if (!p.n) return null; const obs = Math.min(365, Math.max(1, Math.round((TODAY - Date.parse(e.date_pose || e.created_at || iso(TODAY))) / DAY))); return Math.round(obs / p.n); };
+const pillPannes = e => { const p = pannes12(e.id); return p.n ? `<span class="pill ${p.n >= SEUIL_REPETITIVE ? "p-bad" : "p-warn"}" style="margin-right:4px" title="Pannes sur les 12 derniers mois">🔧 ${p.n} panne${p.n > 1 ? "s" : ""}</span>` : ""; };
+
 function eqRow(e) {
   const s = status(e), t = TYPES[e.type];
   return `<a class="row" href="#eq-${e.id}"><div class="ic">${t.ic}</div>
     <div><div class="t">${esc(e.emplacement)}</div><div class="m">${esc(client(e.client_id).nom)}${e.zone ? " · " + esc(e.zone) : ""} · ${t.label} · ${esc(e.marque)} ${esc(e.puissance)}</div></div>
-    <span>${e.criticite === "critique" ? '<span class="pill p-bad" style="margin-right:4px">Critique</span>' : ""}<span class="pill ${s.cls}">${s.txt}</span></span></a>`;
+    <span>${pillPannes(e)}${e.criticite === "critique" ? '<span class="pill p-bad" style="margin-right:4px">Critique</span>' : ""}<span class="pill ${s.cls}">${s.txt}</span></span></a>`;
 }
 
 function renderParc() {
@@ -385,6 +398,10 @@ function renderEq(id) {
       <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><h3 style="font-size:23px">${t.ic} ${esc(e.emplacement)}</h3><span>${e.criticite && e.criticite !== "normale" ? `<span class="pill ${CRIT[e.criticite].cls}" style="margin-right:6px">Criticité ${CRIT[e.criticite].label.toLowerCase()}</span>` : ""}<span class="pill ${s.cls}">${s.txt}</span></span></div>
       <p class="m">${esc(client(e.client_id).nom)} · ${t.label} · ${esc(e.marque)} ${esc(e.puissance)} · <span class="mono">${esc(e.fluide)}</span> · ${(ENV[e.environnement] || ENV.cotier)[1]}</p>
       <p style="margin:10px 0 16px;font-size:14px">Fréquence : <b>${freq(e)} jours</b>${e.frequence_jours ? " (personnalisée)" : ""} · Prochain entretien : <b class="mono">${fr(nextDue(e))}</b><br><span class="m">Points de contrôle : ${t.pts}</span></p>
+      ${(() => { const p12 = pannes12(e.id), tot = pannesEq(e.id), m = mtbfEq(e); return `<div class="pannes-eq ${p12.n >= SEUIL_REPETITIVE ? "alerte" : ""}">
+        <div><b>${p12.n}</b><span>panne${p12.n > 1 ? "s" : ""} sur 12 mois</span></div><div><b>${tot.n}</b><span>au total</span></div><div><b>${tot.sigs}</b><span>signalement${tot.sigs > 1 ? "s" : ""} QR</span></div><div><b>${m ? m + " j" : "—"}</b><span>entre 2 pannes (MTBF)</span></div></div>
+        ${tot.derniere ? `<p class="m" style="margin:-6px 0 12px">Dernière panne : ${fr(tot.derniere)}</p>` : ""}
+        ${p12.n >= SEUIL_REPETITIVE ? `<div class="flag" style="margin-bottom:12px">⚠ Panne répétitive (${p12.n} en 12 mois) : rechercher la cause racine (alimentation, charge en fluide, encrassement, installation), rapprocher le préventif ou chiffrer le remplacement.</div>` : ""}`; })()}
       <h3>Nouvelle intervention</h3>
       <div class="ai"><b style="font-size:14.5px">Saisie rapide</b>
         <p class="m" style="margin:4px 0 8px">Écrivez comme vous parlez, l'application remplit la fiche.</p>
@@ -639,7 +656,8 @@ function renderCert(id) {
   <table><tr><th>Client</th><td>${esc(c.nom)}</td><th>Emplacement</th><td>${esc(e.emplacement)}</td></tr>
     <tr><th>Équipement</th><td>${t.label}</td><th>Marque / puissance</th><td>${esc(e.marque)} · ${esc(e.puissance)}</td></tr>
     <tr><th>Fluide</th><td>${esc(e.fluide)}</td><th>Date de pose</th><td>${fr(e.date_pose)}</td></tr>
-    <tr><th>Fréquence préventive</th><td>${freq(e)} jours</td><th>Prochaine échéance</th><td>${fr(nextDue(e))}</td></tr></table>
+    <tr><th>Fréquence préventive</th><td>${freq(e)} jours</td><th>Prochaine échéance</th><td>${fr(nextDue(e))}</td></tr>
+    <tr><th>Pannes (12 derniers mois)</th><td>${pannes12(e.id).n}</td><th>Pannes au total</th><td>${pannesEq(e.id).n}</td></tr></table>
   <h3 style="margin-top:24px;font-size:17px">Historique des interventions</h3>
   <table><tr><th>Date</th><th>Type</th><th>Mesures</th><th>Observations</th></tr>
   ${list.map(x => `<tr><td class="mono">${fr(x.date)}</td><td>${x.type === "preventif" ? "Préventif" : "Curatif"}</td><td class="mono" style="font-size:12px">${[x.hp != null && "HP " + x.hp, x.bp != null && "BP " + x.bp, x.intensite != null && "I " + x.intensite + " A", x.t_soufflage != null && "Ts " + x.t_soufflage + " °C", x.t_reprise != null && "Tr " + x.t_reprise + " °C"].filter(Boolean).join(" · ") || "—"}</td><td>${esc(x.observations)}</td></tr>`).join("") || `<tr><td colspan="4">Aucune intervention</td></tr>`}</table>
@@ -655,9 +673,9 @@ function renderLabels() {
 }
 
 function exportCsv() {
-  const rows = [["client", "emplacement", "type", "marque", "puissance", "fluide", "environnement", "date_pose", "prochain_entretien", "intervention_date", "intervention_type", "hp", "bp", "intensite", "t_soufflage", "t_reprise", "observations"]];
+  const rows = [["client", "emplacement", "type", "marque", "puissance", "fluide", "environnement", "date_pose", "prochain_entretien", "pannes_12_mois", "pannes_total", "intervention_date", "intervention_type", "hp", "bp", "intensite", "t_soufflage", "t_reprise", "observations"]];
   for (const e of S.eqs) {
-    const base = [client(e.client_id).nom, e.emplacement, TYPES[e.type].label, e.marque, e.puissance, e.fluide, e.environnement, e.date_pose, nextDue(e)];
+    const base = [client(e.client_id).nom, e.emplacement, TYPES[e.type].label, e.marque, e.puissance, e.fluide, e.environnement, e.date_pose, nextDue(e), pannes12(e.id).n, pannesEq(e.id).n];
     const li = intsOf(e.id);
     if (!li.length) rows.push([...base, "", "", "", "", "", "", "", ""]);
     for (const x of li) rows.push([...base, x.date, x.type, x.hp, x.bp, x.intensite, x.t_soufflage, x.t_reprise, x.observations]);
@@ -746,10 +764,13 @@ function renderRapport(clientId) {
     <table><tr><th>Date</th><th>Équipement</th><th>Type</th><th>Mesures</th><th>Observations</th></tr>
     ${intsPeriode.map(x => `<tr><td class="mono">${fr(x.date)}</td><td>${esc(eqOf(x.equipement_id).emplacement)}</td><td>${x.type === "preventif" ? "Préventif" : "Curatif"}</td><td class="mono" style="font-size:12px">${[x.hp != null && "HP " + x.hp, x.bp != null && "BP " + x.bp, x.intensite != null && "I " + x.intensite + " A", x.t_soufflage != null && "Ts " + x.t_soufflage + " °C", x.t_reprise != null && "Tr " + x.t_reprise + " °C"].filter(Boolean).join(" · ") || "—"}</td><td>${esc(x.observations)}</td></tr>`).join("") || `<tr><td colspan="5">Aucune intervention sur la période</td></tr>`}</table>
 
+    ${(() => { const fin = TODAY + DAY, l = eqs.map(e => ({ e, p: pannesEq(e.id, debut, fin), a: pannes12(e.id).n })).filter(x => x.p.n || x.p.sigs).sort((a, b) => b.p.n - a.p.n || b.p.sigs - a.p.sigs);
+      return `<h3 style="font-size:17px;margin-top:22px">Pannes par équipement</h3>${l.length ? `<table><tr><th>Équipement</th><th>Pannes sur la période</th><th>Signalements QR</th><th>Dernière panne</th><th>Pannes sur 12 mois</th></tr>${l.map(({ e, p, a }) => `<tr><td>${esc(e.emplacement)}${e.zone ? " · " + esc(e.zone) : ""}</td><td><b>${p.n}</b></td><td>${p.sigs}</td><td class="mono">${fr(p.derniere)}</td><td>${a}${a >= SEUIL_REPETITIVE ? ' <span class="pill p-bad">répétitive</span>' : ""}</td></tr>`).join("")}<tr><td><b>Total</b></td><td><b>${l.reduce((t, x) => t + x.p.n, 0)}</b></td><td><b>${l.reduce((t, x) => t + x.p.sigs, 0)}</b></td><td></td><td></td></tr></table>` : `<p style="font-size:14px">Aucune panne sur la période. ✅</p>`}`; })()}
     ${sectionPhotos(intsPeriode, i => eqOf(i.equipement_id).emplacement, "Photos des pièces défectueuses et remplacées")}
 
     <h3 style="font-size:17px;margin-top:22px">4. Anomalies et recommandations</h3>
     ${anomalies.length ? `<table><tr><th>Date</th><th>Équipement</th><th>Constat / recommandation</th></tr>${anomalies.map(({ i, f }) => `<tr><td class="mono">${fr(i.date)}</td><td>${esc(eqOf(i.equipement_id).emplacement)}</td><td>${f}</td></tr>`).join("")}</table>` : `<p style="font-size:14px">Aucune anomalie relevée sur la période.</p>`}
+    ${eqs.filter(e => pannes12(e.id).n >= SEUIL_REPETITIVE).map(e => `<p style="font-size:14px;margin-top:8px"><b>Panne répétitive :</b> ${esc(e.emplacement)} (${pannes12(e.id).n} pannes en 12 mois) — recherche de cause racine et étude de remplacement recommandées.</p>`).join("")}
     ${nbLate ? `<p style="font-size:14px;margin-top:8px"><b>Recommandation :</b> planifier rapidement l'entretien des ${nbLate} équipement(s) en retard.</p>` : ""}
 
     <h3 style="font-size:17px;margin-top:22px">5. Planning des 30 prochains jours</h3>
@@ -1271,7 +1292,8 @@ function renderIndicateurs() {
   const coutParSite = S.clients.map(c => { const l = termines.filter(o => o.client_id === c.id); return { c, mo: l.reduce((t, o) => t + (o.cout_main_oeuvre || 0), 0), pc: l.reduce((t, o) => t + coutPieces(o), 0), n: l.length }; }).filter(x => x.n);
   const totalCout = coutParSite.reduce((t, x) => t + x.mo + x.pc, 0);
   const partPrev = termines.length ? Math.round(100 * termines.filter(o => ["preventif", "inspection"].includes(o.type)).length / termines.length) : null;
-  const top = S.eqs.map(e => ({ e, n: pannesInt.filter(i => i.equipement_id === e.id).length })).filter(x => x.n).sort((a, b) => b.n - a.n).slice(0, 5);
+  const tousPannes = S.eqs.map(e => ({ e, n: pannesInt.filter(i => i.equipement_id === e.id).length, sigs: (S.sigs || []).filter(x => x.equipement_id === e.id && dans(x.created_at)).length, a: pannes12(e.id).n, m: mtbfEq(e) })).filter(x => x.n || x.sigs).sort((a, b) => b.n - a.n || b.sigs - a.sigs);
+  const top = tousPannes.filter(x => x.n).slice(0, 5);
   const late = S.eqs.filter(e => status(e).d < 0).length, conf = S.eqs.length ? Math.round(100 * (S.eqs.length - late) / S.eqs.length) : null;
   const sigOuverts = (S.sigs || []).filter(x => x.statut !== "resolu").length;
   const kpi = (v, l, aide, alerte) => `<div class="kpi ${alerte ? "alert" : ""}"><b>${v}</b><span>${l}</span><p class="m" style="font-size:12px;margin-top:6px">${aide}</p></div>`;
@@ -1293,7 +1315,15 @@ function renderIndicateurs() {
   <div class="grid2">
     <div class="panel"><h3>Coûts par ${W().client}</h3>${coutParSite.length ? `<table class="tbl"><tbody><tr><th>${W().Clients.slice(0, -1)}</th><th>OT</th><th>Main d'œuvre</th><th>Pièces</th><th>Total</th></tr>${coutParSite.map(x => `<tr><td>${esc(x.c.nom)}</td><td>${x.n}</td><td>${fcfa2(x.mo)}</td><td>${fcfa2(x.pc)}</td><td><b>${fcfa2(x.mo + x.pc)}</b></td></tr>`).join("")}</tbody></table>` : `<p class="m">Aucun OT terminé sur la période.</p>`}</div>
     <div class="panel"><h3>Équipements les plus en panne</h3>${top.length ? top.map(x => `<div style="margin:8px 0"><div style="display:flex;justify-content:space-between;font-size:14px"><a href="#eq-${x.e.id}">${esc(x.e.emplacement)}</a><span class="m">${esc(client(x.e.client_id).nom || "")} · <b>${x.n}</b></span></div><div style="height:8px;background:var(--ice);border-radius:4px"><div style="height:8px;width:${Math.round(100 * x.n / top[0].n)}%;background:var(--bad);border-radius:4px"></div></div></div>`).join("") + `<p class="m" style="margin-top:8px">Un équipement qui tombe souvent en panne : vérifier la cause racine, rapprocher le préventif, ou envisager son remplacement.</p>` : `<p class="m">Aucune panne enregistrée sur la période. ✅</p>`}</div>
-  </div>`;
+  </div>
+  <div class="panel"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center"><h3>Nombre de pannes par équipement</h3>${tousPannes.length ? `<button class="btn btn-ghost btn-sm noprint" id="csvPannes">Exporter (CSV)</button>` : ""}</div>
+    ${tousPannes.length ? `<table class="tbl"><tbody><tr><th>Équipement</th><th>${W().Clients.slice(0, -1)}</th><th>Pannes (période)</th><th>Signalements QR</th><th>Pannes 12 mois</th><th>MTBF</th><th>Dernière panne</th></tr>${tousPannes.map(x => `<tr><td><a href="#eq-${x.e.id}">${esc(x.e.emplacement)}</a>${x.e.criticite === "critique" ? ' <span class="pill p-bad">Critique</span>' : ""}</td><td>${esc(client(x.e.client_id).nom || "")}</td><td><b>${x.n}</b></td><td>${x.sigs}</td><td>${x.a}${x.a >= SEUIL_REPETITIVE ? ' <span class="pill p-bad">répétitive</span>' : ""}</td><td>${x.m ? x.m + " j" : "—"}</td><td class="mono">${fr(pannesEq(x.e.id).derniere)}</td></tr>`).join("")}</tbody></table>
+    <p class="m" style="margin-top:8px">Panne répétitive = ${SEUIL_REPETITIVE} pannes ou plus sur 12 mois. Les équipements sans panne ni signalement sur la période ne sont pas listés.</p>` : `<p class="m">Aucune panne ni signalement sur la période. ✅</p>`}</div>`;
+  if (document.getElementById("csvPannes")) document.getElementById("csvPannes").onclick = () => {
+    const rows = [["equipement", "zone", "site", "type", "criticite", "pannes_periode", "signalements_periode", "pannes_12_mois", "mtbf_jours", "derniere_panne"], ...tousPannes.map(x => [x.e.emplacement, x.e.zone || "", client(x.e.client_id).nom || "", TYPES[x.e.type]?.label || x.e.type, x.e.criticite || "normale", x.n, x.sigs, x.a, x.m ?? "", pannesEq(x.e.id).derniere || ""])];
+    const csv = "\ufeff" + rows.map(r => r.map(v => `"${String(v ?? "").replace(/"/g, '""')}"`).join(";")).join("\n");
+    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" })); a.download = `pannes-par-equipement-${iso(TODAY)}.csv`; a.click();
+  };
   const s2 = document.getElementById("indP"); s2.value = String(IND); s2.onchange = () => { IND = Number(s2.value); renderIndicateurs(); };
 }
 

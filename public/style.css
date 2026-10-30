@@ -89,3 +89,11 @@ main{padding:24px 0 80px}
 .ia-box.ok{border-left-color:#1f9d6b;background:#f3fbf7}
 .ia-h{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center;font-size:13.5px}
 .ia-t{white-space:pre-line;font-size:13px;line-height:1.5;margin-top:6px}
+
+/* Pannes par équipement */
+.pannes-eq{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:0 0 14px}
+.pannes-eq div{border:1px solid var(--line);border-radius:10px;padding:8px;text-align:center}
+.pannes-eq b{display:block;font-size:20px}
+.pannes-eq span{font-size:12px;color:var(--mute)}
+.pannes-eq.alerte div:first-child{border-color:var(--bad);background:#fff3f3}
+@media(max-width:560px){.pannes-eq{grid-template-columns:1fr 1fr}}
